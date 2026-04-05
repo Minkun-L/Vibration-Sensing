@@ -64,7 +64,7 @@ BUF_READ = 0x63  # FIFO read register
 # =========================
 FS = 6400              # sampling rate
 N = 2048               # buffer size
-CHUNK_SIZE = 170       # max XYZ samples per FIFO read (FIFO max ~341 XYZ sets)
+CHUNK_SIZE = 40        # XYZ samples per read (FIFO max=86 in 16-bit mode)
 FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 # HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
 KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
@@ -128,8 +128,8 @@ def get_fifo_sample_count():
         write_reg(BUF_CLEAR, 0x00)
     hi = status2 & 0x07  # bits 2:0
     raw_count = (hi << 8) | lo
-    # SMP_LEV counts individual axis readings; divide by 3 for XYZ sample sets
-    return raw_count // 3
+    # SMP_LEV counts bytes in FIFO; divide by 6 for XYZ sample sets (16-bit mode)
+    return raw_count // 6
  
 # =========================
 # Collect samples (FIFO polling)
