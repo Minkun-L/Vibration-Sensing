@@ -53,12 +53,12 @@ ODCNTL = 0x21
 INC1 = 0x22
 INC4 = 0x25
 XOUT_L = 0x08
-BUF_CNTL1 = 0x32  # watermark threshold (in samples)
-BUF_CNTL2 = 0x33  # FIFO control: enable, resolution, mode
-BUF_STATUS_1 = 0x34  # sample count low byte
-BUF_STATUS_2 = 0x35  # sample count high bits + watermark flag
+BUF_CNTL1 = 0x5E  # watermark threshold (in samples)
+BUF_CNTL2 = 0x5F  # FIFO control: enable, resolution, mode
+BUF_STATUS_1 = 0x60  # sample count low byte
+BUF_STATUS_2 = 0x61  # sample count high bits + watermark flag
 BUF_READ = 0x63  # FIFO read register
-BUF_CLEAR = 0x36  # write to clear FIFO
+BUF_CLEAR = 0x62  # write to clear FIFO
 # =========================
 # Config
 # =========================
