@@ -63,7 +63,7 @@ BUF_READ = 0x63  # FIFO read register
 # Config
 # =========================
 FS = 6400              # sampling rate
-N = 2048               # buffer size
+N = 3840               # buffer size (0.6s at 6400 Hz)
 CHUNK_SIZE = 40        # XYZ samples per read (FIFO max=86 in 16-bit mode)
 FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 # HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
@@ -242,7 +242,7 @@ def plot_process_func(plot_queue, fs, n_display):
     t = np.arange(n_display) / fs
     z_buf = np.zeros(n_display, dtype=np.float64)
     line_z, = ax.plot(t, z_buf, label="Z")
-    ax.set_ylim(-1.8, 1.8)
+    ax.set_ylim(-2, 3)
     ax.set_title("Time Domain (live)")
     ax.set_ylabel("Acceleration (g)")
     ax.set_xlabel("Time (s)")
