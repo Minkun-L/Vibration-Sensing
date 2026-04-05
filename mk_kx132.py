@@ -210,8 +210,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     z_hp = sosfilt(sos, z_g)
  
     # ── Peak detection (amplitude > 1.5g) ──
-    PEAK_THRESH = 1.5
-    WIN_SEC = 1.0
+    PEAK_THRESH = 1.0
+    WIN_SEC = 0.5
     win_samples = int(WIN_SEC * fs)
  
     above = np.abs(z_hp) > PEAK_THRESH
