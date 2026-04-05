@@ -211,13 +211,17 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
  
     # ── Peak detection (amplitude > 1.5g) ──
     PEAK_THRESH = 1.0
-    WIN_SEC = 0.5
+    WIN_SEC = 0.3
     win_samples = int(WIN_SEC * fs)
  
     above = np.abs(z_hp) > PEAK_THRESH
     # Find rising edges: transitions from below to above threshold
     edges = np.diff(above.astype(np.int8))
     peak_starts = np.where(edges == 1)[0] + 1
+ 
+    # Ignore peaks in the first 2 seconds (sensor settling)
+    skip_samples = int(2.0 * fs)
+    peak_starts = peak_starts[peak_starts >= skip_samples]
  
     # Merge peaks that are within 1 window of each other
     if len(peak_starts) > 1:
