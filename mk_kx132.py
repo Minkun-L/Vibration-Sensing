@@ -1,0 +1,387 @@
+import time
+import csv
+import ctypes
+import threading
+import multiprocessing
+from pathlib import Path
+from datetime import datetime
+import numpy as np
+
+try:
+    import plotly.graph_objects as go
+except ImportError as exc:
+    raise ImportError("plotly is required. Install with: pip install plotly") from exc
+
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+except ImportError:
+    GPIO_AVAILABLE = False
+
+# =========================
+# SPI setup (C library via ctypes)
+# =========================
+_lib_path = Path(__file__).parent / "libspi_fifo.so"
+if not _lib_path.exists():
+    raise FileNotFoundError(f"Compile first: cd {_lib_path.parent} && make")
+_spi = ctypes.CDLL(str(_lib_path))
+
+# C function signatures
+_spi.spi_open.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_uint8]
+_spi.spi_open.restype = ctypes.c_int
+_spi.spi_close.argtypes = []
+_spi.spi_close.restype = None
+_spi.spi_write_reg.argtypes = [ctypes.c_uint8, ctypes.c_uint8]
+_spi.spi_write_reg.restype = ctypes.c_int
+_spi.spi_read_reg.argtypes = [ctypes.c_uint8, ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint16]
+_spi.spi_read_reg.restype = ctypes.c_int
+_spi.spi_fifo_read_samples.argtypes = [ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8)]
+_spi.spi_fifo_read_samples.restype = ctypes.c_int
+
+SPI_DEVICE = b"/dev/spidev0.0"
+SPI_SPEED = 10000000
+SPI_MODE = 3  # CPOL=1, CPHA=1
+if _spi.spi_open(SPI_DEVICE, SPI_SPEED, SPI_MODE) < 0:
+    raise RuntimeError("Failed to open SPI device")
+# =========================
+# KX132 registers
+# =========================
+WHO_AM_I = 0x13
+INS2 = 0x17
+CNTL1 = 0x1B
+ODCNTL = 0x21
+INC1 = 0x22
+INC4 = 0x25
+XOUT_L = 0x08
+BUF_CNTL1 = 0x32  # watermark threshold (in samples)
+BUF_CNTL2 = 0x33  # FIFO control: enable, resolution, mode
+BUF_STATUS_1 = 0x34  # sample count low byte
+BUF_STATUS_2 = 0x35  # sample count high bits + watermark flag
+BUF_READ = 0x63  # FIFO read register
+BUF_CLEAR = 0x36  # write to clear FIFO
+# =========================
+# Config
+# =========================
+FS = 6400              # sampling rate
+N = 2048               # buffer size
+CHUNK_SIZE = 512       # refresh every CHUNK_SIZE fresh samples
+FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
+# HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
+KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
+RELAY_PIN = 27
+RELAY_ON_S = 0.05
+RELAY_OFF_S = 0.95
+# =========================
+# SPI helpers
+# =========================
+def write_reg(reg, value):
+    _spi.spi_write_reg(reg, value)
+
+def read_reg(reg, length=1):
+    buf = (ctypes.c_uint8 * length)()
+    _spi.spi_read_reg(reg, buf, length)
+    return list(buf)
+
+def fifo_burst_read(n_samples):
+    """Read n_samples from FIFO via C ioctl (per-sample CS toggle)."""
+    buf = (ctypes.c_uint8 * (n_samples * 6))()
+    ret = _spi.spi_fifo_read_samples(n_samples, buf)
+    if ret < 0:
+        return np.array([], dtype=np.uint8)
+    return np.frombuffer(buf, dtype=np.uint8).copy()
+# =========================
+# Init sensor
+# =========================
+def init_kx132():
+    # Standby mode for configuration
+    write_reg(CNTL1, 0x00)
+    time.sleep(0.05)
+ 
+    # ODR = 6400 Hz
+    write_reg(ODCNTL, 0x0C)
+ 
+    # FIFO: set watermark threshold to CHUNK_SIZE samples
+    write_reg(BUF_CNTL1, CHUNK_SIZE)
+    # FIFO: enable, 16-bit resolution, stream mode (BUF_M=01)
+    # bit 7: BUFE=1 (enable), bit 6: BRES=1 (16-bit), bit 1:0: BUF_M=01 (stream)
+    write_reg(BUF_CNTL2, 0xC1)
+ 
+    # Clear FIFO
+    write_reg(BUF_CLEAR, 0x00)
+ 
+    # Enable sensor: PC1 + high-res + 8g + DRDYE
+    gsel_8g = 0x10
+    pc1 = 0x80
+    res = 0x40
+    drdye = 0x20
+    write_reg(CNTL1, pc1 | res | gsel_8g | drdye)
+    time.sleep(0.05)
+ 
+# =========================
+# Read FIFO sample count
+# =========================
+def get_fifo_sample_count():
+    lo = read_reg(BUF_STATUS_1)[0]
+    status2 = read_reg(BUF_STATUS_2)[0]
+    if status2 & 0x80:
+        print("FIFO OVERFLOW! resetting...")
+        write_reg(BUF_CLEAR, 0x00)
+    hi = status2 & 0x07  # bits 2:0
+    return (hi << 8) | lo
+ 
+# =========================
+# Collect samples (FIFO polling)
+# =========================
+def collect_data(num_samples):
+    # Poll FIFO until at least num_samples are available (2s timeout)
+    t0 = time.perf_counter()
+    while True:
+        n_available = get_fifo_sample_count()
+        if n_available >= num_samples:
+            break
+        if time.perf_counter() - t0 > 2.0:
+            print("Warning: polling timeout")
+            return FS, np.array([])
+        time.sleep(0.0001)  # brief sleep to avoid busy-wait
+ 
+    n_to_read = CHUNK_SIZE
+    collect_data._call_count = getattr(collect_data, '_call_count', 0) + 1
+    if collect_data._call_count % 100 == 0:
+        print(f"available={n_available}, reading={n_to_read}")
+ 
+    if n_to_read == 0:
+        return FS, np.array([])
+ 
+    # Burst read via C ioctl — single CS, no kernel splitting
+    t_spi = time.perf_counter()
+    raw = fifo_burst_read(n_to_read)
+    dt_spi = time.perf_counter() - t_spi
+    if collect_data._call_count % 100 == 0:
+        print(f"spi_took={dt_spi*1000:.1f}ms, bytes={len(raw)}, reading={n_to_read}")
+
+    if len(raw) == 0:
+        return FS, np.array([])
+
+    # Vectorized decode: reshape to (n_to_read, 6), extract Z only
+    raw = raw.reshape(n_to_read, 6)
+    z_raw = (raw[:, 5].astype(np.int16) << 8) | raw[:, 4]
+ 
+    return FS, z_raw * KX132_G_PER_LSB
+ 
+ 
+CSV_WRITE_THRESHOLD = 1000
+csv_buffer = []
+
+def append_csv_rows(csv_writer, sample_start_idx, z_data):
+    indices = np.arange(sample_start_idx, sample_start_idx + len(z_data))
+    rows = np.column_stack((indices, z_data))
+    csv_buffer.extend(rows.tolist())
+    if len(csv_buffer) >= CSV_WRITE_THRESHOLD:
+        csv_writer.writerows(csv_buffer)
+        csv_buffer.clear()
+ 
+ 
+def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path=None):
+ 
+    csv_file_path = Path(csv_path)
+    if not csv_file_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+ 
+    data = np.genfromtxt(csv_file_path, delimiter=",", names=True)
+    if data.size == 0:
+        raise ValueError("CSV file is empty or missing data rows")
+ 
+    # Ensure array-like behavior for a single-row CSV.
+    data = np.atleast_1d(data)
+ 
+    z_g = np.asarray(data["z_g"], dtype=np.float64)
+ 
+    if sampling_rate_hz <= 0:
+        raise ValueError("sampling_rate_hz must be > 0")
+    time_s = np.arange(len(z_g), dtype=np.float64) / float(sampling_rate_hz)
+ 
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=time_s,
+            y=z_g,
+            mode="lines",
+            name="Z",
+        )
+    )
+    fig.update_layout(
+        title="Z-Axis Over Time",
+        xaxis_title="Time (s)",
+        yaxis_title="Acceleration (g)",
+        template="plotly_white",
+    )
+ 
+    if output_html_path is None:
+        output_html_path = csv_file_path.with_name(f"{csv_file_path.stem}_magnitude.html")
+ 
+    output_html_path = Path(output_html_path)
+    fig.write_html(str(output_html_path), include_plotlyjs="cdn")
+    return str(output_html_path)
+ 
+
+# =========================
+# Live plot process
+# =========================
+def plot_process_func(plot_queue, fs, n_display):
+    import os
+    os.environ['QT_LOGGING_RULES'] = '*.debug=false;qt.qpa.*=false'
+    import matplotlib
+    matplotlib.use('TkAgg')  # avoid Qt/Wayland issues
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    plt.ion()
+    fig, ax = plt.subplots(1, 1)
+    t = np.arange(n_display) / fs
+    z_buf = np.zeros(n_display, dtype=np.float64)
+    line_z, = ax.plot(t, z_buf, label="Z")
+    ax.set_ylim(-1.8, 1.8)
+    ax.set_title("Time Domain (live)")
+    ax.set_ylabel("Acceleration (g)")
+    ax.set_xlabel("Time (s)")
+    ax.legend(loc="upper right")
+    plt.tight_layout()
+    plt.show(block=False)
+
+    while True:
+        try:
+            chunk = plot_queue.get(timeout=2.0)
+        except Exception:
+            continue
+        if chunk is None:  # poison pill
+            break
+        n = len(chunk)
+        z_buf = np.roll(z_buf, -n)
+        z_buf[-n:] = chunk
+        line_z.set_ydata(z_buf)
+        fig.canvas.draw_idle()
+        plt.pause(0.001)
+        # drain extra items to stay responsive
+        while not plot_queue.empty():
+            item = plot_queue.get_nowait()
+            if item is None:
+                plt.close('all')
+                return
+            n2 = len(item)
+            z_buf = np.roll(z_buf, -n2)
+            z_buf[-n2:] = item
+        line_z.set_ydata(z_buf)
+        fig.canvas.draw_idle()
+        plt.pause(0.001)
+    plt.close('all')
+ 
+script_start = datetime.now()
+csv_filename = script_start.strftime("kx132_%Y%m%d_%H%M%S.csv")
+csv_file = open(csv_filename, "w", newline="")
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow(["sample", "z_g"])
+sample_counter = 0
+diag_counter = 0
+plotly_export_enabled = True
+plotly_export_path = Path(csv_filename).with_name(f"{Path(csv_filename).stem}_magnitude.html")
+print(f"Logging CSV: {csv_filename}")
+
+# Start live plot in separate process
+plot_queue = multiprocessing.Queue(maxsize=50)
+plot_proc = multiprocessing.Process(target=plot_process_func, args=(plot_queue, FS, N), daemon=True)
+plot_proc.start()
+ 
+relay_stop_event = threading.Event()
+
+def relay_thread_func():
+    state_on = False
+    last_toggle = time.perf_counter()
+    GPIO.output(RELAY_PIN, GPIO.LOW)
+    while not relay_stop_event.is_set():
+        now = time.perf_counter()
+        period = RELAY_ON_S if state_on else RELAY_OFF_S
+        if now - last_toggle >= period:
+            state_on = not state_on
+            GPIO.output(RELAY_PIN, GPIO.HIGH if state_on else GPIO.LOW)
+            last_toggle = now
+        relay_stop_event.wait(timeout=0.001)
+    GPIO.output(RELAY_PIN, GPIO.LOW)
+
+if GPIO_AVAILABLE:
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(RELAY_PIN, GPIO.OUT)
+    GPIO.output(RELAY_PIN, GPIO.LOW)
+    print(GPIO.gpio_function(27))
+    relay_thread = threading.Thread(target=relay_thread_func, daemon=True)
+    relay_thread.start()
+else:
+    print("Warning: RPi.GPIO not available, relay control disabled")
+try:
+    init_kx132()
+    write_reg(BUF_CLEAR, 0x00)
+    print("WHO:", hex(read_reg(WHO_AM_I)[0]))
+    print("INS2 init:", read_reg(INS2))
+    print("RAW:", read_reg(XOUT_L, 6))
+ 
+    cntl1_val = read_reg(CNTL1)[0]
+    print(f"CNTL1 = {bin(cntl1_val)}")
+    print(f"CNTL1 = {hex(cntl1_val)}")
+ 
+    while True:
+        actual_fs, z_chunk = collect_data(CHUNK_SIZE)
+ 
+        n_got = len(z_chunk)
+        if n_got == 0:
+            continue
+ 
+        append_csv_rows(csv_writer, sample_counter, z_chunk)
+        sample_counter += n_got
+
+        # Send to plot process (non-blocking, drop if queue full)
+        try:
+            plot_queue.put_nowait(z_chunk)
+        except Exception:
+            pass  # drop frame if plot can't keep up
+
+        diag_counter += 1
+ 
+        if diag_counter % 300 == 0:
+            csv_file.flush()
+ 
+        if diag_counter % 100 == 0:
+            print(f"Actual sampling rate: {actual_fs:.1f} Hz")
+            
+except KeyboardInterrupt:
+    print("\nStopping...")
+    if csv_buffer:
+        csv_writer.writerows(csv_buffer)
+        csv_buffer.clear()
+    csv_file.flush()
+    if plotly_export_enabled:
+        try:
+            export_magnitude_plotly_html(
+                csv_path=csv_filename,
+                sampling_rate_hz=FS,
+                output_html_path=plotly_export_path,
+            )
+            print(f"Plotly HTML exported: {plotly_export_path}")
+        except Exception as exc:
+            print(f"Warning: HTML export failed: {exc}")
+finally:
+    relay_stop_event.set()
+    if GPIO_AVAILABLE:
+        if 'relay_thread' in dir():
+            relay_thread.join(timeout=1)
+        GPIO.output(RELAY_PIN, GPIO.LOW)
+        GPIO.cleanup()
+    csv_file.close()
+    _spi.spi_close()
+    # Stop plot process
+    try:
+        plot_queue.put_nowait(None)
+        plot_proc.join(timeout=3)
+    except Exception:
+        pass
+    if plot_proc.is_alive():
+        plot_proc.terminate()
+    plt.close('all')
