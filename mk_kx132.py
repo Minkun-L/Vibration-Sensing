@@ -185,6 +185,7 @@ def append_csv_rows(csv_writer, sample_start_idx, z_data):
  
 def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path=None):
     from plotly.subplots import make_subplots
+    from scipy.signal import butter, sosfilt
  
     csv_file_path = Path(csv_path)
     if not csv_file_path.exists():
@@ -201,46 +202,108 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
  
     if sampling_rate_hz <= 0:
         raise ValueError("sampling_rate_hz must be > 0")
-    time_s = np.arange(len(z_g), dtype=np.float64) / float(sampling_rate_hz)
+    fs = float(sampling_rate_hz)
+    time_s = np.arange(len(z_g), dtype=np.float64) / fs
  
-    # FFT
-    n_fft = len(z_g)
-    fft_vals = np.fft.rfft(z_g)
-    fft_freq = np.fft.rfftfreq(n_fft, d=1.0 / sampling_rate_hz)
-    fft_mag = 2.0 * np.abs(fft_vals) / n_fft
+    # ── 1 Hz high-pass filter ──
+    sos = butter(4, 1.0, btype='high', fs=fs, output='sos')
+    z_hp = sosfilt(sos, z_g)
  
-    # PSD (Welch-like via FFT)
-    psd = np.abs(fft_vals) ** 2 / (n_fft * sampling_rate_hz)
-    psd[1:-1] *= 2  # double non-DC, non-Nyquist bins
-    psd_db = 10 * np.log10(np.maximum(psd, 1e-20))
+    # ── Peak detection (amplitude > 1.5g) ──
+    PEAK_THRESH = 1.5
+    WIN_SEC = 1.0
+    win_samples = int(WIN_SEC * fs)
  
-    # Trim DC / sub-1Hz bins from FFT and PSD plots
-    freq_mask = fft_freq >= 1.0
-    fft_freq_plot = fft_freq[freq_mask]
-    fft_mag_plot = fft_mag[freq_mask]
-    psd_db_plot = psd_db[freq_mask]
+    above = np.abs(z_hp) > PEAK_THRESH
+    # Find rising edges: transitions from below to above threshold
+    edges = np.diff(above.astype(np.int8))
+    peak_starts = np.where(edges == 1)[0] + 1
  
+    # Merge peaks that are within 1 window of each other
+    if len(peak_starts) > 1:
+        merged = [peak_starts[0]]
+        for ps in peak_starts[1:]:
+            if ps - merged[-1] >= win_samples:
+                merged.append(ps)
+        peak_starts = np.array(merged)
+ 
+    # Filter out peaks where window would exceed data length
+    peak_starts = peak_starts[peak_starts + win_samples <= len(z_hp)]
+    print(f"  Found {len(peak_starts)} peak windows (threshold={PEAK_THRESH}g, window={WIN_SEC}s)")
+ 
+    # ── Windowed FFT/PSD averaging ──
+    fft_freq_win = np.fft.rfftfreq(win_samples, d=1.0 / fs)
+    avg_fft_mag = np.zeros(len(fft_freq_win))
+    avg_psd = np.zeros(len(fft_freq_win))
+ 
+    if len(peak_starts) > 0:
+        for ps in peak_starts:
+            window = z_hp[ps:ps + win_samples]
+            fv = np.fft.rfft(window)
+            avg_fft_mag += 2.0 * np.abs(fv) / win_samples
+            p = np.abs(fv) ** 2 / (win_samples * fs)
+            p[1:-1] *= 2
+            avg_psd += p
+        avg_fft_mag /= len(peak_starts)
+        avg_psd /= len(peak_starts)
+    else:
+        # Fallback: use entire signal if no peaks found
+        fft_freq_win = np.fft.rfftfreq(len(z_hp), d=1.0 / fs)
+        fv = np.fft.rfft(z_hp)
+        avg_fft_mag = 2.0 * np.abs(fv) / len(z_hp)
+        p = np.abs(fv) ** 2 / (len(z_hp) * fs)
+        p[1:-1] *= 2
+        avg_psd = p
+
+    avg_psd_db = 10 * np.log10(np.maximum(avg_psd, 1e-20))
+ 
+    # Trim DC / sub-1Hz bins
+    freq_mask = fft_freq_win >= 1.0
+    fft_freq_plot = fft_freq_win[freq_mask]
+    fft_mag_plot = avg_fft_mag[freq_mask]
+    psd_db_plot = avg_psd_db[freq_mask]
+ 
+    # ── Build plotly figure ──
     fig = make_subplots(
         rows=3, cols=1,
-        subplot_titles=("Z-Axis Over Time", "FFT Magnitude", "Power Spectral Density"),
+        subplot_titles=(
+            f"Z-Axis Over Time (1Hz HPF, {len(peak_starts)} peaks detected)",
+            f"FFT Magnitude (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
+            f"PSD (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
+        ),
         vertical_spacing=0.08,
     )
  
-    # Time domain
+    # Time domain (HPF'd)
     fig.add_trace(
-        go.Scatter(x=time_s, y=z_g, mode="lines", name="Z (time)"),
+        go.Scatter(x=time_s, y=z_hp, mode="lines", name="Z (HPF)", line=dict(color="steelblue")),
         row=1, col=1,
     )
  
-    # FFT magnitude
+    # Mark peak windows as shaded rectangles
+    for i, ps in enumerate(peak_starts):
+        t_start = ps / fs
+        t_end = (ps + win_samples) / fs
+        fig.add_vrect(
+            x0=t_start, x1=t_end,
+            fillcolor="red", opacity=0.15, line_width=0,
+            row=1, col=1,
+        )
+        # Mark peak start with a vertical line
+        fig.add_vline(
+            x=t_start, line_dash="dash", line_color="red", line_width=1,
+            row=1, col=1,
+        )
+ 
+    # FFT magnitude (averaged)
     fig.add_trace(
-        go.Scatter(x=fft_freq_plot, y=fft_mag_plot, mode="lines", name="FFT |Z|"),
+        go.Scatter(x=fft_freq_plot, y=fft_mag_plot, mode="lines", name="FFT |Z| (avg)"),
         row=2, col=1,
     )
  
-    # PSD
+    # PSD (averaged)
     fig.add_trace(
-        go.Scatter(x=fft_freq_plot, y=psd_db_plot, mode="lines", name="PSD"),
+        go.Scatter(x=fft_freq_plot, y=psd_db_plot, mode="lines", name="PSD (avg)"),
         row=3, col=1,
     )
  
