@@ -62,8 +62,8 @@ BUF_READ = 0x63  # FIFO read register
 # =========================
 # Config
 # =========================
-FS = 12800             # sampling rate
-N = 7680               # buffer size (0.6s at 12800 Hz)
+FS = 6400              # sampling rate
+N = 3840               # buffer size (0.6s at 6400 Hz)
 CHUNK_SIZE = 40        # XYZ samples per read (FIFO max=86 in 16-bit mode)
 FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 # HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
@@ -97,8 +97,8 @@ def init_kx132():
     write_reg(CNTL1, 0x00)
     time.sleep(0.05)
  
-    # ODR = 12800 Hz (OSA=0x0E)
-    write_reg(ODCNTL, 0x0E)
+    # ODR = 6400 Hz (OSA=0x0D)
+    write_reg(ODCNTL, 0x0D)
  
     # FIFO: set watermark threshold (uint8, max 255)
     write_reg(BUF_CNTL1, min(CHUNK_SIZE, 255))
