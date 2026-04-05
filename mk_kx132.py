@@ -184,6 +184,7 @@ def append_csv_rows(csv_writer, sample_start_idx, z_data):
  
  
 def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path=None):
+    from plotly.subplots import make_subplots
  
     csv_file_path = Path(csv_path)
     if not csv_file_path.exists():
@@ -202,20 +203,52 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
         raise ValueError("sampling_rate_hz must be > 0")
     time_s = np.arange(len(z_g), dtype=np.float64) / float(sampling_rate_hz)
  
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=time_s,
-            y=z_g,
-            mode="lines",
-            name="Z",
-        )
+    # FFT
+    n_fft = len(z_g)
+    fft_vals = np.fft.rfft(z_g)
+    fft_freq = np.fft.rfftfreq(n_fft, d=1.0 / sampling_rate_hz)
+    fft_mag = 2.0 * np.abs(fft_vals) / n_fft
+ 
+    # PSD (Welch-like via FFT)
+    psd = np.abs(fft_vals) ** 2 / (n_fft * sampling_rate_hz)
+    psd[1:-1] *= 2  # double non-DC, non-Nyquist bins
+    psd_db = 10 * np.log10(np.maximum(psd, 1e-20))
+ 
+    fig = make_subplots(
+        rows=3, cols=1,
+        subplot_titles=("Z-Axis Over Time", "FFT Magnitude", "Power Spectral Density"),
+        vertical_spacing=0.08,
     )
+ 
+    # Time domain
+    fig.add_trace(
+        go.Scatter(x=time_s, y=z_g, mode="lines", name="Z (time)"),
+        row=1, col=1,
+    )
+ 
+    # FFT magnitude
+    fig.add_trace(
+        go.Scatter(x=fft_freq, y=fft_mag, mode="lines", name="FFT |Z|"),
+        row=2, col=1,
+    )
+ 
+    # PSD
+    fig.add_trace(
+        go.Scatter(x=fft_freq, y=psd_db, mode="lines", name="PSD"),
+        row=3, col=1,
+    )
+ 
+    fig.update_xaxes(title_text="Time (s)", row=1, col=1)
+    fig.update_yaxes(title_text="Acceleration (g)", row=1, col=1)
+    fig.update_xaxes(title_text="Frequency (Hz)", row=2, col=1)
+    fig.update_yaxes(title_text="Magnitude (g)", row=2, col=1)
+    fig.update_xaxes(title_text="Frequency (Hz)", row=3, col=1)
+    fig.update_yaxes(title_text="PSD (dB/Hz)", row=3, col=1)
+ 
     fig.update_layout(
-        title="Z-Axis Over Time",
-        xaxis_title="Time (s)",
-        yaxis_title="Acceleration (g)",
+        height=900,
         template="plotly_white",
+        showlegend=True,
     )
  
     if output_html_path is None:
