@@ -326,6 +326,30 @@ try:
     cntl1_val = read_reg(CNTL1)[0]
     print(f"CNTL1 = {bin(cntl1_val)}")
     print(f"CNTL1 = {hex(cntl1_val)}")
+
+    # ── FIFO read diagnostic ──────────────────────────
+    time.sleep(0.2)  # let FIFO fill at 6400 Hz → ~1280 samples
+    print("\n=== FIFO DIAGNOSTIC ===")
+    print("BUF_CNTL2 readback:", hex(read_reg(BUF_CNTL2)[0]))
+    print("FIFO sample count:", get_fifo_sample_count())
+
+    # Test A: read 6 bytes from BUF_READ in one 7-byte SPI transaction
+    test_a = read_reg(BUF_READ, 6)
+    print("A) BUF_READ  6 bytes (1 txn):", test_a)
+
+    # Test B: read 1 byte from BUF_READ × 6 (six 2-byte SPI transactions)
+    test_b = [read_reg(BUF_READ, 1)[0] for _ in range(6)]
+    print("B) BUF_READ  1 byte × 6:     ", test_b)
+
+    # Test C: read 6 bytes from XOUT_L in one 7-byte SPI transaction
+    test_c = read_reg(XOUT_L, 6)
+    print("C) XOUT_L    6 bytes (1 txn):", test_c)
+
+    # Test D: per-sample C function, 1 sample
+    test_d = fifo_burst_read(1)
+    print("D) C per-sample 1 sample:    ", list(test_d[:6]))
+    print("=== END DIAGNOSTIC ===\n")
+    # ──────────────────────────────────────────────────
  
     while True:
         actual_fs, z_chunk = collect_data(CHUNK_SIZE)
