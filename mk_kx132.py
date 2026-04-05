@@ -57,8 +57,8 @@ BUF_CNTL1 = 0x5E  # watermark threshold (in samples)
 BUF_CNTL2 = 0x5F  # FIFO control: enable, resolution, mode
 BUF_STATUS_1 = 0x60  # sample count low byte
 BUF_STATUS_2 = 0x61  # sample count high bits + watermark flag
-BUF_READ = 0x63  # FIFO read register
 BUF_CLEAR = 0x62  # write to clear FIFO
+BUF_READ = 0x63  # FIFO read register
 # =========================
 # Config
 # =========================
@@ -331,21 +331,43 @@ try:
     time.sleep(0.2)  # let FIFO fill at 6400 Hz → ~1280 samples
     print("\n=== FIFO DIAGNOSTIC ===")
     print("BUF_CNTL2 readback:", hex(read_reg(BUF_CNTL2)[0]))
-    print("FIFO sample count:", get_fifo_sample_count())
+    fifo_cnt = get_fifo_sample_count()
+    print("FIFO sample count:", fifo_cnt)
+
+    # Read ADP_CNTL registers (0x64-0x69) for comparison
+    adp = read_reg(0x64, 6)
+    print("ADP_CNTL(1-6) @ 0x64-0x69:", adp)
 
     # Test A: read 6 bytes from BUF_READ in one 7-byte SPI transaction
     test_a = read_reg(BUF_READ, 6)
     print("A) BUF_READ  6 bytes (1 txn):", test_a)
+    if test_a[1:6] == adp[0:5]:
+        print("   >>> AUTO-INCREMENT CONFIRMED! bytes [1:6] match ADP_CNTL regs")
 
-    # Test B: read 1 byte from BUF_READ × 6 (six 2-byte SPI transactions)
-    test_b = [read_reg(BUF_READ, 1)[0] for _ in range(6)]
-    print("B) BUF_READ  1 byte × 6:     ", test_b)
+    # Test B: read 1 byte from BUF_READ × 12 (twelve 2-byte SPI transactions = 2 samples)
+    test_b = [read_reg(BUF_READ, 1)[0] for _ in range(12)]
+    print("B) BUF_READ  1 byte × 12:    ", test_b)
+    # Decode as two samples
+    for s in range(2):
+        off = s * 6
+        xv = np.int16((test_b[off+1] << 8) | test_b[off+0])
+        yv = np.int16((test_b[off+3] << 8) | test_b[off+2])
+        zv = np.int16((test_b[off+5] << 8) | test_b[off+4])
+        print(f"   Sample {s}: X={xv} ({xv*KX132_G_PER_LSB:.3f}g) "
+              f"Y={yv} ({yv*KX132_G_PER_LSB:.3f}g) "
+              f"Z={zv} ({zv*KX132_G_PER_LSB:.3f}g)")
 
-    # Test C: read 6 bytes from XOUT_L in one 7-byte SPI transaction
+    # Test C: read 6 bytes from XOUT_L in one 7-byte SPI transaction (always works)
     test_c = read_reg(XOUT_L, 6)
     print("C) XOUT_L    6 bytes (1 txn):", test_c)
+    xc = np.int16((test_c[1] << 8) | test_c[0])
+    yc = np.int16((test_c[3] << 8) | test_c[2])
+    zc = np.int16((test_c[5] << 8) | test_c[4])
+    print(f"   XOUT decode: X={xc} ({xc*KX132_G_PER_LSB:.3f}g) "
+          f"Y={yc} ({yc*KX132_G_PER_LSB:.3f}g) "
+          f"Z={zc} ({zc*KX132_G_PER_LSB:.3f}g)")
 
-    # Test D: per-sample C function, 1 sample
+    # Test D: per-sample C function, 1 sample (7-byte txn)
     test_d = fifo_burst_read(1)
     print("D) C per-sample 1 sample:    ", list(test_d[:6]))
     print("=== END DIAGNOSTIC ===\n")
