@@ -348,11 +348,13 @@ try:
     test_b = [read_reg(BUF_READ, 1)[0] for _ in range(12)]
     print("B) BUF_READ  1 byte × 12:    ", test_b)
     # Decode as two samples
+    def _to_i16(hi, lo):
+        return np.array([(hi << 8) | lo], dtype=np.uint16).view(np.int16)[0]
     for s in range(2):
         off = s * 6
-        xv = np.int16((test_b[off+1] << 8) | test_b[off+0])
-        yv = np.int16((test_b[off+3] << 8) | test_b[off+2])
-        zv = np.int16((test_b[off+5] << 8) | test_b[off+4])
+        xv = _to_i16(test_b[off+1], test_b[off+0])
+        yv = _to_i16(test_b[off+3], test_b[off+2])
+        zv = _to_i16(test_b[off+5], test_b[off+4])
         print(f"   Sample {s}: X={xv} ({xv*KX132_G_PER_LSB:.3f}g) "
               f"Y={yv} ({yv*KX132_G_PER_LSB:.3f}g) "
               f"Z={zv} ({zv*KX132_G_PER_LSB:.3f}g)")
@@ -360,9 +362,9 @@ try:
     # Test C: read 6 bytes from XOUT_L in one 7-byte SPI transaction (always works)
     test_c = read_reg(XOUT_L, 6)
     print("C) XOUT_L    6 bytes (1 txn):", test_c)
-    xc = np.int16((test_c[1] << 8) | test_c[0])
-    yc = np.int16((test_c[3] << 8) | test_c[2])
-    zc = np.int16((test_c[5] << 8) | test_c[4])
+    xc = _to_i16(test_c[1], test_c[0])
+    yc = _to_i16(test_c[3], test_c[2])
+    zc = _to_i16(test_c[5], test_c[4])
     print(f"   XOUT decode: X={xc} ({xc*KX132_G_PER_LSB:.3f}g) "
           f"Y={yc} ({yc*KX132_G_PER_LSB:.3f}g) "
           f"Z={zc} ({zc*KX132_G_PER_LSB:.3f}g)")
@@ -430,4 +432,3 @@ finally:
         pass
     if plot_proc.is_alive():
         plot_proc.terminate()
-    plt.close('all')
