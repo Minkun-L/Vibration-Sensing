@@ -85,28 +85,37 @@ int spi_read_reg(uint8_t reg, uint8_t *buf, uint16_t length)
     return 0;
 }
 
-/* ── FIFO per-sample read: N separate SPI transactions ─ */
-/*    Each transaction: [0xE3, 0,0,0,0,0,0] → 6 data bytes */
-/*    CS toggles between each sample, advancing FIFO ptr    */
+/* ── FIFO per-sample read: 6 × 2-byte SPI transactions per sample ── */
+/*    KX132 BUF_READ auto-increments address in multi-byte reads,     */
+/*    so each FIFO byte must be a separate 2-byte SPI transaction:    */
+/*    [0xE3, 0x00] → rx[1] = one FIFO byte.                          */
+/*    We batch 6 transfers per ioctl using cs_change flag.            */
 
 int spi_fifo_read_samples(uint16_t n_samples, uint8_t *out_buf)
 {
-    uint8_t tx[7] = { 0x63 | 0x80, 0, 0, 0, 0, 0, 0 };
-    uint8_t rx[7];
+    uint8_t tx[6][2];
+    uint8_t rx[6][2];
+    struct spi_ioc_transfer tr[6];
+
+    /* Pre-fill the tx buffers and zero the transfer structs */
+    memset(tr, 0, sizeof(tr));
+    for (int j = 0; j < 6; j++) {
+        tx[j][0] = 0x63 | 0x80;   /* BUF_READ command */
+        tx[j][1] = 0x00;
+        tr[j].tx_buf        = (unsigned long)tx[j];
+        tr[j].rx_buf        = (unsigned long)rx[j];
+        tr[j].len           = 2;
+        tr[j].cs_change     = 1;  /* deassert CS after each transfer */
+    }
+    /* Last transfer: cs_change=0 → CS deasserts normally at end */
+    tr[5].cs_change = 0;
 
     for (uint16_t i = 0; i < n_samples; i++) {
-        struct spi_ioc_transfer tr = {
-            .tx_buf        = (unsigned long)tx,
-            .rx_buf        = (unsigned long)rx,
-            .len           = 7,
-            .speed_hz      = 0,
-            .bits_per_word = 0,
-            .cs_change     = 0,
-            .delay_usecs   = 0,
-        };
-        int ret = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
+        int ret = ioctl(spi_fd, SPI_IOC_MESSAGE(6), tr);
         if (ret < 0) { perror("fifo sample read"); return ret; }
-        memcpy(out_buf + i * 6, rx + 1, 6);
+        for (int j = 0; j < 6; j++) {
+            out_buf[i * 6 + j] = rx[j][1];
+        }
     }
     return 0;
 }
