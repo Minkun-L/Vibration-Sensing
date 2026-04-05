@@ -64,7 +64,7 @@ BUF_READ = 0x63  # FIFO read register
 # =========================
 FS = 6400              # sampling rate
 N = 2048               # buffer size
-CHUNK_SIZE = 512       # refresh every CHUNK_SIZE fresh samples
+CHUNK_SIZE = 170       # max XYZ samples per FIFO read (FIFO max ~341 XYZ sets)
 FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 # HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
 KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
@@ -97,11 +97,11 @@ def init_kx132():
     write_reg(CNTL1, 0x00)
     time.sleep(0.05)
  
-    # ODR = 6400 Hz
-    write_reg(ODCNTL, 0x0C)
+    # ODR = 6400 Hz (OSA=0x0D; 0x0C was 3200 Hz)
+    write_reg(ODCNTL, 0x0D)
  
-    # FIFO: set watermark threshold to CHUNK_SIZE samples
-    write_reg(BUF_CNTL1, CHUNK_SIZE)
+    # FIFO: set watermark threshold (uint8, max 255)
+    write_reg(BUF_CNTL1, min(CHUNK_SIZE, 255))
     # FIFO: enable, 16-bit resolution, stream mode (BUF_M=01)
     # bit 7: BUFE=1 (enable), bit 6: BRES=1 (16-bit), bit 1:0: BUF_M=01 (stream)
     write_reg(BUF_CNTL2, 0xC1)
@@ -127,7 +127,9 @@ def get_fifo_sample_count():
         print("FIFO OVERFLOW! resetting...")
         write_reg(BUF_CLEAR, 0x00)
     hi = status2 & 0x07  # bits 2:0
-    return (hi << 8) | lo
+    raw_count = (hi << 8) | lo
+    # SMP_LEV counts individual axis readings; divide by 3 for XYZ sample sets
+    return raw_count // 3
  
 # =========================
 # Collect samples (FIFO polling)
@@ -144,7 +146,7 @@ def collect_data(num_samples):
             return FS, np.array([])
         time.sleep(0.0001)  # brief sleep to avoid busy-wait
  
-    n_to_read = CHUNK_SIZE
+    n_to_read = min(CHUNK_SIZE, n_available)
     collect_data._call_count = getattr(collect_data, '_call_count', 0) + 1
     if collect_data._call_count % 100 == 0:
         print(f"available={n_available}, reading={n_to_read}")
