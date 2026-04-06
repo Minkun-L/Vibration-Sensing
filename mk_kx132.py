@@ -186,6 +186,7 @@ def append_csv_rows(csv_writer, sample_start_idx, z_data):
 def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path=None):
     from plotly.subplots import make_subplots
     from scipy.signal import butter, sosfilt, find_peaks
+    import re
  
     csv_file_path = Path(csv_path)
     if not csv_file_path.exists():
@@ -370,7 +371,6 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     )
  
     if output_html_path is None:
-        import re
         short_name = re.sub(r'^kx132_\d{4}', '', csv_file_path.stem).lstrip("_")
         output_html_path = csv_file_path.with_name(short_name + ".html")
  
@@ -386,12 +386,24 @@ def plot_process_func(plot_queue, fs, n_display):
     import os
     os.environ['QT_LOGGING_RULES'] = '*.debug=false;qt.qpa.*=false'
     import matplotlib
-    matplotlib.use('TkAgg')  # avoid Qt/Wayland issues
-    import matplotlib.pyplot as plt
+    # Try TkAgg first; fall back to Agg (non-interactive) on headless systems
+    try:
+        matplotlib.use('TkAgg')
+        import matplotlib.pyplot as plt
+        plt.ion()
+        fig, ax = plt.subplots(1, 1)
+    except (ImportError, Exception):
+        print("Warning: No display available, live plot disabled")
+        # Drain queue so main process doesn't block
+        while True:
+            try:
+                item = plot_queue.get(timeout=2.0)
+                if item is None:
+                    return
+            except Exception:
+                continue
+        return
     import numpy as np
-
-    plt.ion()
-    fig, ax = plt.subplots(1, 1)
     t = np.arange(n_display) / fs
     z_buf = np.zeros(n_display, dtype=np.float64)
     line_z, = ax.plot(t, z_buf, label="Z")
@@ -445,6 +457,12 @@ print(f"Logging CSV: {csv_filename}")
 plot_queue = multiprocessing.Queue(maxsize=50)
 plot_proc = multiprocessing.Process(target=plot_process_func, args=(plot_queue, FS, N), daemon=True)
 plot_proc.start()
+
+# Pre-import scipy so it's cached before Ctrl+C triggers export
+try:
+    from scipy.signal import butter, sosfilt, find_peaks  # noqa: F401
+except ImportError:
+    pass
  
 relay_stop_event = threading.Event()
 
