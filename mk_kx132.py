@@ -185,7 +185,7 @@ def append_csv_rows(csv_writer, sample_start_idx, z_data):
  
 def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path=None):
     from plotly.subplots import make_subplots
-    from scipy.signal import butter, sosfilt
+    from scipy.signal import butter, sosfilt, find_peaks
  
     csv_file_path = Path(csv_path)
     if not csv_file_path.exists():
@@ -205,8 +205,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     fs = float(sampling_rate_hz)
     time_s = np.arange(len(z_g), dtype=np.float64) / fs
  
-    # ── 1 Hz high-pass filter ──
-    sos = butter(4, 1.0, btype='high', fs=fs, output='sos')
+    # ── 20 Hz high-pass filter ──
+    sos = butter(4, 20.0, btype='high', fs=fs, output='sos')
     z_hp = sosfilt(sos, z_g)
  
     # ── Peak detection (amplitude > 1.5g) ──
@@ -266,8 +266,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
 
     avg_psd_db = 10 * np.log10(np.maximum(avg_psd, 1e-20))
  
-    # Trim DC / sub-1Hz bins
-    freq_mask = fft_freq_win >= 1.0
+    # Trim sub-20Hz bins
+    freq_mask = fft_freq_win >= 20.0
     fft_freq_plot = fft_freq_win[freq_mask]
     fft_mag_plot = avg_fft_mag[freq_mask]
     psd_db_plot = avg_psd_db[freq_mask]
@@ -276,7 +276,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     fig = make_subplots(
         rows=3, cols=1,
         subplot_titles=(
-            f"Z-Axis Over Time (1Hz HPF, {len(peak_starts)} peaks detected)",
+            f"Z-Axis Over Time (20Hz HPF, {len(peak_starts)} peaks detected)",
             f"FFT Magnitude (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
             f"PSD (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
         ),
@@ -316,6 +316,44 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
         row=3, col=1,
     )
  
+    # ── PSD peak detection (prominence ≥ 20 dB) ──
+    PSD_PEAK_PROMINENCE = 20.0
+    PSD_PEAK_WIN_HZ = 50.0  # half-width of highlight window around each peak
+    psd_peak_indices, psd_peak_props = find_peaks(
+        psd_db_plot, prominence=PSD_PEAK_PROMINENCE,
+    )
+    if len(psd_peak_indices) > 0:
+        psd_peak_freqs = fft_freq_plot[psd_peak_indices]
+        psd_peak_vals = psd_db_plot[psd_peak_indices]
+        print(f"  PSD peaks (>{PSD_PEAK_PROMINENCE}dB prominence): "
+              + ", ".join(f"{f:.1f}Hz ({v:.1f}dB/Hz)" for f, v in zip(psd_peak_freqs, psd_peak_vals)))
+        # Mark each peak with a shaded window and annotation
+        for idx, pi in enumerate(psd_peak_indices):
+            f_center = fft_freq_plot[pi]
+            f_lo = max(fft_freq_plot[0], f_center - PSD_PEAK_WIN_HZ)
+            f_hi = min(fft_freq_plot[-1], f_center + PSD_PEAK_WIN_HZ)
+            fig.add_vrect(
+                x0=f_lo, x1=f_hi,
+                fillcolor="orange", opacity=0.15, line_width=0,
+                row=3, col=1,
+            )
+            fig.add_vline(
+                x=f_center, line_dash="dash", line_color="red", line_width=1,
+                row=3, col=1,
+            )
+        # Scatter markers on the peaks
+        fig.add_trace(
+            go.Scatter(
+                x=psd_peak_freqs, y=psd_peak_vals,
+                mode="markers+text",
+                marker=dict(color="red", size=8, symbol="diamond"),
+                text=[f"{f:.0f}Hz" for f in psd_peak_freqs],
+                textposition="top center",
+                name=f"PSD peaks (>{PSD_PEAK_PROMINENCE}dB)",
+            ),
+            row=3, col=1,
+        )
+
     fig.update_xaxes(title_text="Time (s)", row=1, col=1)
     fig.update_yaxes(title_text="Acceleration (g)", row=1, col=1)
     fig.update_xaxes(title_text="Frequency (Hz)", row=2, col=1)
