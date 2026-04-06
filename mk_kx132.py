@@ -70,7 +70,7 @@ FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
 RELAY_PIN = 27
 RELAY_ON_S = 0.05
-RELAY_OFF_S = 0.95
+RELAY_OFF_S = 1.95
 # =========================
 # SPI helpers
 # =========================
@@ -210,8 +210,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     z_hp = sosfilt(sos, z_g)
  
     # ── Peak detection (amplitude > 1.5g) ──
-    PEAK_THRESH = 1.0
-    WIN_SEC = 0.3
+    PEAK_THRESH = 0.6
+    WIN_SEC = 0.5
     win_samples = int(WIN_SEC * fs)
  
     above = np.abs(z_hp) > PEAK_THRESH
@@ -241,21 +241,26 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     avg_psd = np.zeros(len(fft_freq_win))
  
     if len(peak_starts) > 0:
+        hann = np.hanning(win_samples)
+        hann_sum = np.sum(hann)       # for FFT magnitude correction
+        hann_ss = np.sum(hann ** 2)   # for PSD correction
         for ps in peak_starts:
-            window = z_hp[ps:ps + win_samples]
+            window = z_hp[ps:ps + win_samples] * hann
             fv = np.fft.rfft(window)
-            avg_fft_mag += 2.0 * np.abs(fv) / win_samples
-            p = np.abs(fv) ** 2 / (win_samples * fs)
+            avg_fft_mag += 2.0 * np.abs(fv) / hann_sum
+            p = np.abs(fv) ** 2 / (hann_ss * fs)
             p[1:-1] *= 2
             avg_psd += p
         avg_fft_mag /= len(peak_starts)
         avg_psd /= len(peak_starts)
     else:
         # Fallback: use entire signal if no peaks found
-        fft_freq_win = np.fft.rfftfreq(len(z_hp), d=1.0 / fs)
-        fv = np.fft.rfft(z_hp)
-        avg_fft_mag = 2.0 * np.abs(fv) / len(z_hp)
-        p = np.abs(fv) ** 2 / (len(z_hp) * fs)
+        n_full = len(z_hp)
+        hann = np.hanning(n_full)
+        fft_freq_win = np.fft.rfftfreq(n_full, d=1.0 / fs)
+        fv = np.fft.rfft(z_hp * hann)
+        avg_fft_mag = 2.0 * np.abs(fv) / np.sum(hann)
+        p = np.abs(fv) ** 2 / (np.sum(hann ** 2) * fs)
         p[1:-1] *= 2
         avg_psd = p
 
