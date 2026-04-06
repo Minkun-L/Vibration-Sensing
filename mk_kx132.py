@@ -317,8 +317,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     )
  
     # ── PSD peak detection (prominence ≥ 20 dB) ──
-    PSD_PEAK_PROMINENCE = 20.0
-    PSD_PEAK_WIN_HZ = 50.0  # half-width of highlight window around each peak
+    PSD_PEAK_PROMINENCE = 15.0
+    PSD_PEAK_WIN_HZ = 150.0  # half-width of highlight window around each peak
     psd_peak_indices, psd_peak_props = find_peaks(
         psd_db_plot, prominence=PSD_PEAK_PROMINENCE,
     )
@@ -353,6 +353,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
             ),
             row=3, col=1,
         )
+    else:
+        print(f"  No PSD peaks found with prominence > {PSD_PEAK_PROMINENCE} dB")
 
     fig.update_xaxes(title_text="Time (s)", row=1, col=1)
     fig.update_yaxes(title_text="Acceleration (g)", row=1, col=1)
