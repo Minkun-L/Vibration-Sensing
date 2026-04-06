@@ -370,7 +370,9 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     )
  
     if output_html_path is None:
-        output_html_path = csv_file_path.with_name(f"{csv_file_path.stem}_magnitude.html")
+        import re
+        short_name = re.sub(r'^kx132_\d{4}', '', csv_file_path.stem).lstrip("_")
+        output_html_path = csv_file_path.with_name(short_name + ".html")
  
     output_html_path = Path(output_html_path)
     fig.write_html(str(output_html_path), include_plotlyjs="cdn")
@@ -436,7 +438,7 @@ csv_writer.writerow(["sample", "z_g"])
 sample_counter = 0
 diag_counter = 0
 plotly_export_enabled = True
-plotly_export_path = Path(csv_filename).with_name(f"{Path(csv_filename).stem}_magnitude.html")
+plotly_export_path = Path(csv_filename).with_name(script_start.strftime("%m%d_%H%M%S.html"))
 print(f"Logging CSV: {csv_filename}")
 
 # Start live plot in separate process
