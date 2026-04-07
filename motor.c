@@ -1,16 +1,15 @@
-
 #include <stdio.h>
 #include <unistd.h>
 #include <pigpio.h>
 
 #define SERVO_PIN 18   // GPIO18 (Pin 12)
 
-// Clamp for HS-424
+
 int angle_to_pulse(int angle)
 {
     if (angle < 0) angle = 0;
     if (angle > 180) angle = 180;
-    return 600 + (angle * (2400 - 600)) / 180;
+    return 500 + (angle * (2500 - 500)) / 180;
 }
 
 int main()
