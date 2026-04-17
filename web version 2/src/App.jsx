@@ -7,8 +7,8 @@ import { LayoutDashboard, TableProperties, Settings, Activity, Radio, Sun, Moon 
 
 const PAGE_TITLES = {
   dashboard: { title: 'Measurement Dashboard',  sub: 'Liner wear overview' },
-  details:   { title: 'Measurement Details',    sub: 'Feature breakdown & session history' },
-  settings:  { title: 'Measurement Settings',   sub: 'Schedule or trigger measurements' },
+  details:   { title: 'Vibration Signal Analysis', sub: 'Feature breakdown & session history' },
+  settings:  { title: 'Measure',                sub: 'Schedule or trigger measurements' },
 }
 
 function ThemeToggle() {
@@ -28,8 +28,8 @@ function AppShell() {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={16} /> },
-    { id: 'details',   label: 'Details',   icon: <TableProperties size={16} /> },
-    { id: 'settings',  label: 'Settings',  icon: <Settings size={16} /> },
+    { id: 'details',   label: 'Vibration Signal Analysis',   icon: <TableProperties size={16} /> },
+    { id: 'settings',  label: 'Measure',   icon: <Settings size={16} /> },
   ]
 
   return (

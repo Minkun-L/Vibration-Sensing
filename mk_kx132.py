@@ -8,6 +8,14 @@ from datetime import datetime
 import numpy as np
 
 try:
+    from flask import Flask, jsonify
+    from flask_cors import CORS
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    print("Warning: flask/flask-cors not installed. Run: pip install flask flask-cors")
+
+try:
     import plotly.graph_objects as go
 except ImportError as exc:
     raise ImportError("plotly is required. Install with: pip install plotly") from exc
@@ -71,6 +79,45 @@ KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
 RELAY_PIN = 27
 RELAY_ON_S = 0.05
 RELAY_OFF_S = 1.95
+HPF_CUTOFF_HZ = 10.0      # high-pass filter cutoff (Hz) — used in export and feature extraction
+FLASK_PORT = 5000         # port for the REST API server
+# =========================
+# Flask API server
+# =========================
+_latest_features = {}          # updated by compute_features()
+_measure_trigger = threading.Event()  # set by /trigger to start a measurement
+
+if FLASK_AVAILABLE:
+    _flask_app = Flask(__name__)
+    CORS(_flask_app)  # allow requests from PC browser
+
+    @_flask_app.route("/features")
+    def api_features():
+        if not _latest_features:
+            return jsonify({"error": "No measurement data yet"}), 404
+        return jsonify(_latest_features)
+
+    @_flask_app.route("/trigger", methods=["POST"])
+    def api_trigger():
+        _measure_trigger.set()
+        return jsonify({"status": "triggered"})
+
+    @_flask_app.route("/status")
+    def api_status():
+        return jsonify({
+            "ready": True,
+            "hasMeasurement": bool(_latest_features),
+            "timestamp": _latest_features.get("timestamp", None),
+        })
+
+    def _start_flask():
+        import logging
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)  # suppress request logs
+        _flask_app.run(host="0.0.0.0", port=FLASK_PORT, use_reloader=False)
+
+    threading.Thread(target=_start_flask, daemon=True).start()
+    print(f"Flask API running on port {FLASK_PORT}")
 # =========================
 # SPI helpers
 # =========================
@@ -206,8 +253,8 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     fs = float(sampling_rate_hz)
     time_s = np.arange(len(z_g), dtype=np.float64) / fs
  
-    # ── 20 Hz high-pass filter ──
-    sos = butter(4, 20.0, btype='high', fs=fs, output='sos')
+    # ── High-pass filter ──
+    sos = butter(4, HPF_CUTOFF_HZ, btype='high', fs=fs, output='sos')
     z_hp = sosfilt(sos, z_g)
  
     # ── Peak detection (amplitude > 1.5g) ──
@@ -268,7 +315,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     avg_psd_db = 10 * np.log10(np.maximum(avg_psd, 1e-20))
  
     # Trim sub-20Hz bins
-    freq_mask = fft_freq_win >= 20.0
+    freq_mask = fft_freq_win >= HPF_CUTOFF_HZ
     fft_freq_plot = fft_freq_win[freq_mask]
     fft_mag_plot = avg_fft_mag[freq_mask]
     psd_db_plot = avg_psd_db[freq_mask]
@@ -277,7 +324,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     fig = make_subplots(
         rows=3, cols=1,
         subplot_titles=(
-            f"Z-Axis Over Time (20Hz HPF, {len(peak_starts)} peaks detected)",
+            f"Z-Axis Over Time ({HPF_CUTOFF_HZ:.0f}Hz HPF, {len(peak_starts)} peaks detected)",
             f"FFT Magnitude (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
             f"PSD (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
         ),
@@ -377,6 +424,82 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     output_html_path = Path(output_html_path)
     fig.write_html(str(output_html_path), include_plotlyjs="cdn")
     return str(output_html_path)
+
+
+# =========================
+# Feature extraction
+# =========================
+def compute_features(csv_path, sampling_rate_hz=FS):
+    from scipy.signal import butter, sosfilt
+
+    csv_file_path = Path(csv_path)
+    data = np.genfromtxt(csv_file_path, delimiter=",", names=True)
+    data = np.atleast_1d(data)
+    z_g = np.asarray(data["z_g"], dtype=np.float64)
+
+    fs = float(sampling_rate_hz)
+
+    # ── Feature 5: RMS of Acceleration ──
+    rms = float(np.sqrt(np.mean(z_g ** 2)))
+
+    # ── High-pass filter (same as HTML export) ──
+    sos = butter(4, HPF_CUTOFF_HZ, btype='high', fs=fs, output='sos')
+    z_hp = sosfilt(sos, z_g)
+
+    # ── Peak window detection (same logic as HTML export) ──
+    PEAK_THRESH = 0.6
+    WIN_SEC = 0.5
+    win_samples = int(WIN_SEC * fs)
+    skip_samples = int(2.0 * fs)
+
+    above = np.abs(z_hp) > PEAK_THRESH
+    edges = np.diff(above.astype(np.int8))
+    peak_starts = np.where(edges == 1)[0] + 1
+    peak_starts = peak_starts[peak_starts >= skip_samples]
+    if len(peak_starts) > 1:
+        merged = [peak_starts[0]]
+        for ps in peak_starts[1:]:
+            if ps - merged[-1] >= win_samples:
+                merged.append(ps)
+        peak_starts = np.array(merged)
+    peak_starts = peak_starts[peak_starts + win_samples <= len(z_hp)]
+
+    # ── Averaged PSD over peak windows ──
+    fft_freq = np.fft.rfftfreq(win_samples, d=1.0 / fs)
+    avg_psd = np.zeros(len(fft_freq))
+    if len(peak_starts) > 0:
+        hann = np.hanning(win_samples)
+        hann_ss = np.sum(hann ** 2)
+        for ps in peak_starts:
+            fv = np.fft.rfft(z_hp[ps:ps + win_samples] * hann)
+            p = np.abs(fv) ** 2 / (hann_ss * fs)
+            p[1:-1] *= 2
+            avg_psd += p
+        avg_psd /= len(peak_starts)
+    else:
+        n_full = len(z_hp)
+        hann = np.hanning(n_full)
+        fft_freq = np.fft.rfftfreq(n_full, d=1.0 / fs)
+        fv = np.fft.rfft(z_hp * hann)
+        avg_psd = np.abs(fv) ** 2 / (np.sum(hann ** 2) * fs)
+        avg_psd[1:-1] *= 2
+
+    # ── Feature 1: Primary Resonance Frequency (peak of PSD above 20 Hz) ──
+    freq_mask = fft_freq >= HPF_CUTOFF_HZ
+    primary_freq = float(fft_freq[freq_mask][np.argmax(avg_psd[freq_mask])])
+
+    print("\n=== EXTRACTED FEATURES ===")
+    print(f"  Feature 1 — Primary Resonance Frequency : {primary_freq:.1f} Hz")
+    print(f"  Feature 5 — RMS of Acceleration         : {rms:.4f} g")
+    print("===========================\n")
+
+    # Push to Flask API so the frontend can fetch them
+    _latest_features.clear()
+    _latest_features.update({
+        "primaryFreq":      round(primary_freq, 1),
+        "rmsAcceleration":  round(rms, 4),
+        "timestamp":        datetime.now().isoformat(),
+    })
  
 
 # =========================
@@ -588,6 +711,10 @@ except KeyboardInterrupt:
             print(f"Plotly HTML exported: {plotly_export_path}")
         except Exception as exc:
             print(f"Warning: HTML export failed: {exc}")
+    try:
+        compute_features(csv_path=csv_filename, sampling_rate_hz=FS)
+    except Exception as exc:
+        print(f"Warning: Feature extraction failed: {exc}")
 finally:
     relay_stop_event.set()
     if GPIO_AVAILABLE:

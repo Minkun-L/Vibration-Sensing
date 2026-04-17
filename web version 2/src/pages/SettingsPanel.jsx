@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Calendar, Clock, PlayCircle, CheckCircle2, Loader2, Monitor } from 'lucide-react'
+import { Calendar, Clock, PlayCircle, CheckCircle2, Loader2, Monitor, WifiOff } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext.jsx'
+import { triggerMeasurement, fetchStatus } from '../lib/api.js'
 
 export default function SettingsPanel() {
   const { theme } = useTheme()
@@ -21,21 +22,39 @@ export default function SettingsPanel() {
   })
 
   // ── Measurement state ──────────────────────────────────────────────────────
-  const [status, setStatus] = useState('idle') // idle | measuring | done
+  const [status, setStatus] = useState('idle') // idle | measuring | done | error
   const [completedAt, setCompletedAt] = useState('')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [piOnline, setPiOnline] = useState(null) // null=checking, true, false
 
-  function handleStart() {
+  // Check Pi reachability on mount
+  useEffect(() => {
+    fetchStatus()
+      .then(() => setPiOnline(true))
+      .catch(() => setPiOnline(false))
+  }, [])
+
+  async function handleStart() {
     if (status === 'measuring') return
     setStatus('measuring')
-    setTimeout(() => {
+    setErrorMsg('')
+    try {
+      await triggerMeasurement()
+      // Poll /status until hasMeasurement flips or timeout (30s)
+      const deadline = Date.now() + 30000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1500))
+        const s = await fetchStatus()
+        if (s.hasMeasurement) break
+      }
       setStatus('done')
       setCompletedAt(new Date().toLocaleTimeString())
-    }, 4000)
-  }
-
-  function handleReset() {
-    setStatus('idle')
-    setCompletedAt('')
+      setPiOnline(true)
+    } catch (e) {
+      setStatus('error')
+      setErrorMsg('Could not reach the Pi. Make sure you are connected to the Pi hotspot.')
+      setPiOnline(false)
+    }
   }
 
   // Next scheduled preview
@@ -159,9 +178,16 @@ export default function SettingsPanel() {
             <div>
               <p style={{ fontSize: '0.875rem', fontWeight: 500, color: '#34d399' }}>Measurement complete</p>
               <p style={{ fontSize: '0.7rem', color: 'var(--muted-foreground)', marginTop: 2 }}>
-                Completed at {completedAt}. Data saved to history.
+                Completed at {completedAt}. Switch to Vibration Signal Analysis to see the results.
               </p>
             </div>
+          </div>
+        )}
+
+        {status === 'error' && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderRadius: 'var(--radius)', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', marginBottom: 16 }}>
+            <WifiOff size={15} style={{ color: '#f87171', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: '0.8rem', color: '#f87171' }}>{errorMsg}</p>
           </div>
         )}
 
@@ -171,14 +197,17 @@ export default function SettingsPanel() {
               ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Measuring...</>
               : <><PlayCircle size={14} /> Start Measurement Now</>}
           </button>
-          {status === 'done' && (
-            <button className="btn-outline" onClick={handleReset}>Reset</button>
+          {(status === 'done' || status === 'error') && (
+            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg('') }}>Reset</button>
           )}
         </div>
       </div>
 
       <p style={{ marginTop: 20, fontSize: '0.7rem', color: 'var(--muted-foreground)', lineHeight: 1.6 }}>
-        <strong style={{ color: 'var(--foreground)', opacity: 0.6 }}>Note:</strong> Each measurement session takes approximately 4 seconds. The system will automatically process the vibration signal and update the Dashboard with the latest liner thickness estimate.
+        <strong style={{ color: 'var(--foreground)', opacity: 0.6 }}>Connection:</strong>{' '}
+        {piOnline === null && 'Checking Pi connection...'}
+        {piOnline === true  && '✅ Pi is reachable on the hotspot network.'}
+        {piOnline === false && '⚠️ Pi not reachable. Connect your device to the Pi hotspot (192.168.4.1).'}
       </p>
     </div>
   )

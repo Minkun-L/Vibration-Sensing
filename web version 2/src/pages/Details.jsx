@@ -1,9 +1,11 @@
+import { useState, useEffect } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts'
 import { mockHistory, latestMeasurement, getThicknessStatus } from '../lib/mockData.js'
-import { Activity, Waves, Timer, Radio, Zap } from 'lucide-react'
+import { fetchFeatures } from '../lib/api.js'
+import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 // ── Feature row ───────────────────────────────────────────────────────────────
 function FeatureItem({ icon, label, sub, value, unit, extra }) {
@@ -25,15 +27,53 @@ function FeatureItem({ icon, label, sub, value, unit, extra }) {
 
 function KeyFeatures() {
   const d = latestMeasurement
+  const [live, setLive] = useState(null)   // { primaryFreq, rmsAcceleration, timestamp }
+  const [piStatus, setPiStatus] = useState('loading') // loading | connected | offline
+  const [refreshing, setRefreshing] = useState(false)
+
+  async function load() {
+    setRefreshing(true)
+    try {
+      const data = await fetchFeatures()
+      setLive(data)
+      setPiStatus('connected')
+    } catch {
+      setPiStatus('offline')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const primaryFreq     = live ? live.primaryFreq             : d.primaryFreq
+  const rmsAcceleration = live ? live.rmsAcceleration         : d.rmsAcceleration
+  const dataSource      = live ? `Live · Pi · ${new Date(live.timestamp).toLocaleTimeString()}` : `Mock data · ${d.date}`
+
   return (
     <div className="card" style={{ padding: 20 }}>
-      <div className="card-title">Latest Key Features</div>
-      <div className="card-sub" style={{ marginBottom: 16 }}>Extracted from measurement on {d.date}</div>
-      <FeatureItem icon={<Activity size={15} />} label="Primary Resonance Frequency" sub="f₁ — fundamental bending mode of the liner" value={d.primaryFreq} unit="Hz" />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div className="card-title">Latest Key Features</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {piStatus === 'connected' && <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: '#4ade80', fontWeight: 600 }}><Wifi size={12} /> Pi connected</span>}
+          {piStatus === 'offline'   && <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: '#f87171', fontWeight: 600 }}><WifiOff size={12} /> Pi offline — showing mock data</span>}
+          <button
+            onClick={load}
+            disabled={refreshing}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted-foreground)', padding: 2 }}
+            title="Refresh from Pi"
+          >
+            <RefreshCw size={13} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
+          </button>
+        </div>
+      </div>
+      <div className="card-sub" style={{ marginBottom: 16 }}>{dataSource}</div>
+
+      <FeatureItem icon={<Activity size={15} />} label="Primary Resonance Frequency" sub="f₁ — fundamental bending mode of the liner" value={primaryFreq} unit="Hz" />
       <FeatureItem icon={<Waves size={15} />} label="Modal Frequency Ratio" sub="f₂ / f₁ — ratio of 2nd to 1st mode; rises as liner thins" value={d.freqRatio.toFixed(2)} unit="" />
       <FeatureItem icon={<Timer size={15} />} label="Decay Time · Damping Ratio · Q Factor" sub="τ (ms) · ζ · Q = f₁ / bandwidth" value={d.decayTime} unit="ms" extra={`ζ = ${d.dampingRatio.toFixed(3)}  ·  Q = ${d.qFactor.toFixed(1)}`} />
       <FeatureItem icon={<Radio size={15} />} label="Spectral Centroid · Energy" sub="Centroid (Hz) shifts lower; energy rises with wear" value={d.spectralCentroid} unit="Hz" extra={`Energy = ${d.spectralEnergy.toFixed(3)} g²·s`} />
-      <FeatureItem icon={<Zap size={15} />} label="RMS of Acceleration" sub="Root-mean-square of Z-axis; increases as liner wears" value={d.rmsAcceleration.toFixed(2)} unit="g" />
+      <FeatureItem icon={<Zap size={15} />} label="RMS of Acceleration" sub="Root-mean-square of Z-axis; increases as liner wears" value={rmsAcceleration.toFixed(2)} unit="g" />
     </div>
   )
 }
