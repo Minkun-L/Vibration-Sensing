@@ -214,7 +214,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
  
     # ── Peak detection (amplitude > 1.5g) ──
     PEAK_THRESH = 0.6
-    WIN_SEC = 0.5
+    WIN_SEC = 0.05
     win_samples = int(WIN_SEC * fs)
  
     above = np.abs(z_hp) > PEAK_THRESH
@@ -394,16 +394,13 @@ def compute_features(csv_path, sampling_rate_hz=FS):
 
     fs = float(sampling_rate_hz)
 
-    # ── Feature 5: RMS of Acceleration ──
-    rms = float(np.sqrt(np.mean(z_g ** 2)))
-
-    # ── High-pass filter (same as HTML export) ──
+    # ── High-pass filter ──
     sos = butter(4, HPF_CUTOFF_HZ, btype='high', fs=fs, output='sos')
     z_hp = sosfilt(sos, z_g)
 
-    # ── Peak window detection (same logic as HTML export) ──
+    # ── Peak window detection (0.05 s per window) ──
     PEAK_THRESH = 0.6
-    WIN_SEC = 0.5
+    WIN_SEC = 0.05
     win_samples = int(WIN_SEC * fs)
     skip_samples = int(2.0 * fs)
 
@@ -419,18 +416,28 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         peak_starts = np.array(merged)
     peak_starts = peak_starts[peak_starts + win_samples <= len(z_hp)]
 
-    # ── Averaged PSD over peak windows ──
-    fft_freq = np.fft.rfftfreq(win_samples, d=1.0 / fs)
-    avg_psd = np.zeros(len(fft_freq))
+    # ── Collect windowed segments (used for both PSD and RMS) ──
     if len(peak_starts) > 0:
+        windows = [z_hp[ps:ps + win_samples] for ps in peak_starts]
+    else:
+        # Fallback: treat entire signal as one window
+        windows = [z_hp]
+
+    # ── Feature 5: RMS of Acceleration (averaged over windows) ──
+    rms = float(np.mean([np.sqrt(np.mean(w ** 2)) for w in windows]))
+
+    # ── Averaged PSD over peak windows ──
+    if len(peak_starts) > 0:
+        fft_freq = np.fft.rfftfreq(win_samples, d=1.0 / fs)
+        avg_psd = np.zeros(len(fft_freq))
         hann = np.hanning(win_samples)
         hann_ss = np.sum(hann ** 2)
-        for ps in peak_starts:
-            fv = np.fft.rfft(z_hp[ps:ps + win_samples] * hann)
+        for w in windows:
+            fv = np.fft.rfft(w * hann)
             p = np.abs(fv) ** 2 / (hann_ss * fs)
             p[1:-1] *= 2
             avg_psd += p
-        avg_psd /= len(peak_starts)
+        avg_psd /= len(windows)
     else:
         n_full = len(z_hp)
         hann = np.hanning(n_full)
@@ -439,12 +446,24 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         avg_psd = np.abs(fv) ** 2 / (np.sum(hann ** 2) * fs)
         avg_psd[1:-1] *= 2
 
-    # ── Feature 1: Primary Resonance Frequency (peak of PSD above 20 Hz) ──
+    # Restrict all spectral features to frequencies above the HPF cutoff
     freq_mask = fft_freq >= HPF_CUTOFF_HZ
-    primary_freq = float(fft_freq[freq_mask][np.argmax(avg_psd[freq_mask])])
+    psd_masked = avg_psd[freq_mask]
+    freq_masked = fft_freq[freq_mask]
+
+    # ── Feature 1: Primary Resonance Frequency (peak of PSD above HPF cutoff) ──
+    primary_freq = float(freq_masked[np.argmax(psd_masked)])
+
+    # ── Feature: Spectral Centroid (PSD-weighted mean frequency) ──
+    psd_sum = np.sum(psd_masked)
+    if psd_sum > 0:
+        spectral_centroid = float(np.sum(freq_masked * psd_masked) / psd_sum)
+    else:
+        spectral_centroid = 0.0
 
     print("\n=== EXTRACTED FEATURES ===")
     print(f"  Feature 1 — Primary Resonance Frequency : {primary_freq:.1f} Hz")
+    print(f"  Feature 4 — Spectral Centroid           : {spectral_centroid:.1f} Hz")
     print(f"  Feature 5 — RMS of Acceleration         : {rms:.4f} g")
     print("===========================\n")
 
@@ -453,6 +472,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     features = {
         "primaryFreq":      round(primary_freq, 1),
         "rmsAcceleration":  round(rms, 4),
+        "spectralCentroid": round(spectral_centroid, 1),
         "timestamp":        datetime.now().isoformat(),
     }
     features_path = Path(__file__).parent / "features.json"
