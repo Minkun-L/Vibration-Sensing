@@ -8,14 +8,6 @@ from datetime import datetime
 import numpy as np
 
 try:
-    from flask import Flask, jsonify
-    from flask_cors import CORS
-    FLASK_AVAILABLE = True
-except ImportError:
-    FLASK_AVAILABLE = False
-    print("Warning: flask/flask-cors not installed. Run: pip install flask flask-cors")
-
-try:
     import plotly.graph_objects as go
 except ImportError as exc:
     raise ImportError("plotly is required. Install with: pip install plotly") from exc
@@ -80,44 +72,7 @@ RELAY_PIN = 27
 RELAY_ON_S = 0.05
 RELAY_OFF_S = 1.95
 HPF_CUTOFF_HZ = 10.0      # high-pass filter cutoff (Hz) — used in export and feature extraction
-FLASK_PORT = 5000         # port for the REST API server
-# =========================
-# Flask API server
-# =========================
-_latest_features = {}          # updated by compute_features()
-_measure_trigger = threading.Event()  # set by /trigger to start a measurement
-
-if FLASK_AVAILABLE:
-    _flask_app = Flask(__name__)
-    CORS(_flask_app)  # allow requests from PC browser
-
-    @_flask_app.route("/features")
-    def api_features():
-        if not _latest_features:
-            return jsonify({"error": "No measurement data yet"}), 404
-        return jsonify(_latest_features)
-
-    @_flask_app.route("/trigger", methods=["POST"])
-    def api_trigger():
-        _measure_trigger.set()
-        return jsonify({"status": "triggered"})
-
-    @_flask_app.route("/status")
-    def api_status():
-        return jsonify({
-            "ready": True,
-            "hasMeasurement": bool(_latest_features),
-            "timestamp": _latest_features.get("timestamp", None),
-        })
-
-    def _start_flask():
-        import logging
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)  # suppress request logs
-        _flask_app.run(host="0.0.0.0", port=FLASK_PORT, use_reloader=False)
-
-    threading.Thread(target=_start_flask, daemon=True).start()
-    print(f"Flask API running on port {FLASK_PORT}")
+MEASURE_DURATION_S = 20   # how long to collect data per run (seconds)
 # =========================
 # SPI helpers
 # =========================
@@ -493,13 +448,15 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     print(f"  Feature 5 — RMS of Acceleration         : {rms:.4f} g")
     print("===========================\n")
 
-    # Push to Flask API so the frontend can fetch them
-    _latest_features.clear()
-    _latest_features.update({
+    # Write results to features.json so server.py can serve them to the frontend
+    import json
+    features = {
         "primaryFreq":      round(primary_freq, 1),
         "rmsAcceleration":  round(rms, 4),
         "timestamp":        datetime.now().isoformat(),
-    })
+    }
+    features_path = Path(__file__).parent / "features.json"
+    features_path.write_text(json.dumps(features, indent=2))
  
 
 # =========================
@@ -670,8 +627,10 @@ try:
     print("D) C per-sample 1 sample:    ", list(test_d[:6]))
     print("=== END DIAGNOSTIC ===\n")
     # ──────────────────────────────────────────────────
- 
-    while True:
+
+    measure_end = time.perf_counter() + MEASURE_DURATION_S
+    print(f"Collecting data for {MEASURE_DURATION_S}s...")
+    while time.perf_counter() < measure_end:
         actual_fs, z_chunk = collect_data(CHUNK_SIZE)
  
         n_got = len(z_chunk)
@@ -694,13 +653,18 @@ try:
  
         if diag_counter % 100 == 0:
             print(f"Actual sampling rate: {actual_fs:.1f} Hz")
-            
+
+    print(f"\nDone — {sample_counter} samples collected.")
+
 except KeyboardInterrupt:
-    print("\nStopping...")
+    print("\nStopping early (KeyboardInterrupt)...")
+finally:
+    # Flush CSV
     if csv_buffer:
         csv_writer.writerows(csv_buffer)
         csv_buffer.clear()
     csv_file.flush()
+    # Export plotly HTML
     if plotly_export_enabled:
         try:
             export_magnitude_plotly_html(
@@ -711,11 +675,12 @@ except KeyboardInterrupt:
             print(f"Plotly HTML exported: {plotly_export_path}")
         except Exception as exc:
             print(f"Warning: HTML export failed: {exc}")
+    # Extract features and push to Flask API
     try:
         compute_features(csv_path=csv_filename, sampling_rate_hz=FS)
     except Exception as exc:
         print(f"Warning: Feature extraction failed: {exc}")
-finally:
+    # Hardware cleanup
     relay_stop_event.set()
     if GPIO_AVAILABLE:
         if 'relay_thread' in dir():
