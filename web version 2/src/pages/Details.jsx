@@ -72,7 +72,7 @@ function KeyFeatures() {
       <FeatureItem icon={<Activity size={15} />} label="Primary Resonance Frequency" sub="f₁ — fundamental bending mode of the liner" value={primaryFreq} unit="Hz" />
       <FeatureItem icon={<Waves size={15} />} label="Modal Frequency Ratio" sub="f₂ / f₁ — ratio of 2nd to 1st mode; rises as liner thins" value={d.freqRatio.toFixed(2)} unit="" />
       <FeatureItem icon={<Timer size={15} />} label="Decay Time · Damping Ratio · Q Factor" sub="τ (ms) · ζ · Q = f₁ / bandwidth" value={d.decayTime} unit="ms" extra={`ζ = ${d.dampingRatio.toFixed(3)}  ·  Q = ${d.qFactor.toFixed(1)}`} />
-      <FeatureItem icon={<Radio size={15} />} label="Spectral Centroid · Energy" sub="Centroid (Hz) shifts lower; energy rises with wear" value={d.spectralCentroid} unit="Hz" extra={`Energy = ${d.spectralEnergy.toFixed(3)} g²·s`} />
+      <FeatureItem icon={<Radio size={15} />} label="Spectral Centroid" sub="Centroid (Hz) shifts lower as liner thickness decreases" value={d.spectralCentroid} unit="Hz" />
       <FeatureItem icon={<Zap size={15} />} label="RMS of Acceleration" sub="Root-mean-square of Z-axis; increases as liner wears" value={rmsAcceleration.toFixed(2)} unit="g" />
     </div>
   )
@@ -123,7 +123,7 @@ function FreqChart() {
 // ── History table ─────────────────────────────────────────────────────────────
 function HistoryTable() {
   const rows = [...mockHistory].reverse()
-  const headers = ['Date', 'f₁ (Hz)', 'f₂/f₁', 'Decay (ms)', 'ζ', 'Q', 'Centroid (Hz)', 'Energy (g²·s)', 'RMS (g)', 'Thickness']
+  const headers = ['Date', 'f₁ (Hz)', 'f₂/f₁', 'Decay (ms)', 'ζ', 'Q', 'Centroid (Hz)', 'RMS (g)', 'Thickness']
   return (
     <div className="card overflow-hidden">
       <div className="card-header">
@@ -148,7 +148,6 @@ function HistoryTable() {
                   <td>{r.dampingRatio.toFixed(3)}</td>
                   <td>{r.qFactor.toFixed(1)}</td>
                   <td>{r.spectralCentroid}</td>
-                  <td>{r.spectralEnergy.toFixed(3)}</td>
                   <td>{r.rmsAcceleration.toFixed(2)}</td>
                   <td style={{ fontWeight: 600, color }}>{r.linerThicknessPct}%</td>
                 </tr>
