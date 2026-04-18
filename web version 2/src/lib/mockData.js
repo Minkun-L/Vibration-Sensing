@@ -70,6 +70,6 @@ export const latestMeasurement = mockHistory[mockHistory.length - 1]
 // Threshold helper
 export function getThicknessStatus(pct) {
   if (pct >= 60) return 'healthy'
-  if (pct >= 40) return 'warning'
+  if (pct >= 25) return 'warning'
   return 'critical'
 }

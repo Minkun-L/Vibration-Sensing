@@ -55,7 +55,7 @@ function ThicknessBanner() {
 function ThicknessTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   const val = payload[0]?.value
-  const color = val > 60 ? '#4ade80' : val > 40 ? '#fbbf24' : '#f87171'
+  const color = val > 60 ? '#4ade80' : val > 25 ? '#fbbf24' : '#f87171'
   return (
     <div style={{
       borderRadius: 'var(--radius)', border: '1px solid var(--border)',
@@ -74,7 +74,7 @@ function ThicknessTooltip({ active, payload, label }) {
 // ── Coloured dots ─────────────────────────────────────────────────────────────
 function ThicknessDot({ cx, cy, payload }) {
   const v = payload.linerThicknessPct
-  const fill = v > 60 ? '#4ade80' : v > 40 ? '#fbbf24' : '#f87171'
+  const fill = v > 60 ? '#4ade80' : v > 25 ? '#fbbf24' : '#f87171'
   return <circle cx={cx} cy={cy} r={5} fill={fill} stroke="var(--card)" strokeWidth={2} />
 }
 
@@ -85,27 +85,27 @@ function ThicknessChart() {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 4 }}>
         <div>
           <div className="card-title">Liner Thickness Remaining Over Time</div>
-          <div className="card-sub">Each dot is colour-coded by wear zone. Dashed line = replacement threshold (40%).</div>
+          <div className="card-sub">Each dot is colour-coded by wear zone. Dashed line = replacement threshold (25%).</div>
         </div>
         <span className="badge">{mockHistory.length} measurements</span>
       </div>
 
       <div className="info-box">
         <Info size={12} style={{ color: 'var(--muted-foreground)', flexShrink: 0, marginTop: 1 }} />
-        Green zone (&gt;60%) indicates a healthy liner. Yellow zone (40–60%) means wear is significant and maintenance should be planned. Red zone (&lt;40%) requires immediate inspection.
+        Green zone (&gt;60%) indicates a healthy liner. Yellow zone (25–60%) means wear is significant and maintenance should be planned. Red zone (&lt;25%) requires immediate inspection.
       </div>
 
       <div style={{ height: 300 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={mockHistory} margin={{ top: 8, right: 16, left: -10, bottom: 0 }}>
-            <ReferenceArea y1={0}  y2={40}  fill="#ef4444" fillOpacity={0.08} />
-            <ReferenceArea y1={40} y2={60}  fill="#f59e0b" fillOpacity={0.08} />
+            <ReferenceArea y1={0}  y2={25}  fill="#ef4444" fillOpacity={0.08} />
+            <ReferenceArea y1={25} y2={60}  fill="#f59e0b" fillOpacity={0.08} />
             <ReferenceArea y1={60} y2={100} fill="#22c55e" fillOpacity={0.07} />
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(128,128,128,0.15)" />
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'rgba(148,163,184,0.8)', fontFamily: 'var(--font-mono)' }} axisLine={{ stroke: 'rgba(128,128,128,0.2)' }} tickLine={false} />
             <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: 'rgba(148,163,184,0.8)', fontFamily: 'var(--font-mono)' }} axisLine={false} tickLine={false} unit="%" width={42} />
             <Tooltip content={<ThicknessTooltip />} />
-            <ReferenceLine y={40} stroke="rgba(239,68,68,0.5)" strokeDasharray="5 4" label={{ value: 'Replace soon  40%', fill: 'rgba(239,68,68,0.7)', fontSize: 10, position: 'insideTopLeft' }} />
+            <ReferenceLine y={25} stroke="rgba(239,68,68,0.5)" strokeDasharray="5 4" label={{ value: 'Replace soon  25%', fill: 'rgba(239,68,68,0.7)', fontSize: 10, position: 'insideTopLeft' }} />
             <ReferenceLine y={60} stroke="rgba(245,158,11,0.4)" strokeDasharray="5 4" label={{ value: 'Warning  60%', fill: 'rgba(245,158,11,0.6)', fontSize: 10, position: 'insideTopLeft' }} />
             <Line type="monotone" dataKey="linerThicknessPct" stroke="#94a3b8" strokeWidth={2.5} dot={<ThicknessDot />} activeDot={{ r: 7, stroke: 'var(--card)', strokeWidth: 2 }} />
           </LineChart>
