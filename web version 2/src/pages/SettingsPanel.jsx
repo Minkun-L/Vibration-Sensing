@@ -319,6 +319,12 @@ export default function SettingsPanel() {
                   <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.qFactor.toFixed(1)}</span>
                 </div>
               )}
+              {features.freqRatio != null && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                  <span style={{ color: 'var(--muted-foreground)' }}>Modal Frequency Ratio f₂/f₁</span>
+                  <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.freqRatio.toFixed(2)}</span>
+                </div>
+              )}
             </div>
             {features.note && (
               <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(74,222,128,0.15)' }}>

@@ -52,6 +52,7 @@ function KeyFeatures() {
   const dampingRatio    = live ? live.dampingRatio            : d.dampingRatio
   const qFactor         = live ? live.qFactor                 : d.qFactor
   const spectralCentroid = live ? live.spectralCentroid       : d.spectralCentroid
+  const freqRatio       = live ? live.freqRatio               : d.freqRatio
   const dataSource      = live ? `Live · Pi · ${new Date(live.timestamp).toLocaleTimeString()}` : `Mock data · ${d.date}`
 
   return (
@@ -74,7 +75,7 @@ function KeyFeatures() {
       <div className="card-sub" style={{ marginBottom: 16 }}>{dataSource}</div>
 
       <FeatureItem icon={<Activity size={15} />} label="Primary Resonance Frequency" sub="f₁ — fundamental bending mode of the liner" value={primaryFreq} unit="Hz" />
-      <FeatureItem icon={<Waves size={15} />} label="Modal Frequency Ratio" sub="f₂ / f₁ — ratio of 2nd to 1st mode; rises as liner thins" value={d.freqRatio.toFixed(2)} unit="" />
+      <FeatureItem icon={<Waves size={15} />} label="Modal Frequency Ratio" sub="f₂ / f₁ — ratio of 2nd to 1st mode; rises as liner thins" value={freqRatio != null ? freqRatio.toFixed(2) : '—'} unit="" />
       <FeatureItem icon={<Timer size={15} />} label="Decay Time · Damping Ratio · Q Factor" sub="τ (ms) · ζ · Q = f₁ / bandwidth" value={typeof decayTime === 'number' ? decayTime.toFixed(1) : decayTime} unit="ms" extra={`ζ = ${typeof dampingRatio === 'number' ? dampingRatio.toFixed(4) : dampingRatio}  ·  Q = ${typeof qFactor === 'number' ? qFactor.toFixed(1) : qFactor}`} />
       <FeatureItem icon={<Radio size={15} />} label="Spectral Centroid" sub="Centroid (Hz) shifts lower as liner thickness decreases" value={spectralCentroid} unit="Hz" />
       <FeatureItem icon={<Zap size={15} />} label="RMS of Acceleration" sub="Root-mean-square of Z-axis; increases as liner wears" value={rmsAcceleration.toFixed(2)} unit="g" />
@@ -161,7 +162,7 @@ function HistoryTable() {
           <thead>
             {useMock
               ? <tr>{['Date','f₁ (Hz)','f₂/f₁','Decay (ms)','ζ','Q','Centroid (Hz)','RMS (g)','Thickness'].map(h => <th key={h}>{h}</th>)}</tr>
-              : <tr>{['Date','f₁ (Hz)','Centroid (Hz)','RMS (g)','Decay (ms)','ζ','Q','Note'].map(h => <th key={h}>{h}</th>)}</tr>
+              : <tr>{['Date','f₁ (Hz)','f₂/f₁','Centroid (Hz)','RMS (g)','Decay (ms)','ζ','Q','Note'].map(h => <th key={h}>{h}</th>)}</tr>
             }
           </thead>
           <tbody>
@@ -196,6 +197,7 @@ function HistoryTable() {
                   >
                     <td style={{ fontWeight: 500 }}>{r.date}</td>
                     <td>{r.primaryFreq}</td>
+                    <td>{r.freqRatio != null ? r.freqRatio.toFixed(2) : '—'}</td>
                     <td>{r.spectralCentroid}</td>
                     <td>{r.rmsAcceleration?.toFixed(2)}</td>
                     <td>{r.decayTime != null ? r.decayTime.toFixed(1) : '—'}</td>

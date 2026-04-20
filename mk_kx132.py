@@ -467,7 +467,19 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     else:
         spectral_centroid = 0.0
 
-    # ── Features: Q Factor, Damping Ratio, Decay Time (half-power bandwidth method) ──
+    # ── Feature: Modal Frequency Ratio (f₂ / f₁) ──
+    # Find the second distinct PSD peak, requiring at least max(50 Hz, 30% of f₁) separation
+    freq_resolution = float(freq_masked[1] - freq_masked[0]) if len(freq_masked) > 1 else 1.0
+    min_sep_bins = max(2, int(max(50.0, 0.3 * primary_freq) / freq_resolution))
+    candidate_peaks, _ = _find_peaks(psd_masked, distance=min_sep_bins)
+    if len(candidate_peaks) >= 2:
+        sorted_peaks = sorted(candidate_peaks, key=lambda i: psd_masked[i], reverse=True)
+        second_freq = float(freq_masked[sorted_peaks[1]])
+        freq_ratio = round(second_freq / primary_freq, 2) if primary_freq > 0 else None
+    else:
+        second_freq = None
+        freq_ratio = None
+    print(f"  Feature 6 — Modal Frequency Ratio (f₂/f₁): {freq_ratio} (f₂ = {second_freq} Hz)")
     # Find -3dB (half-power) crossing points around the primary frequency peak
     peak_idx = int(np.argmax(psd_masked))
     half_power = psd_masked[peak_idx] / 2.0
@@ -516,6 +528,8 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "primaryFreq":      round(primary_freq, 1),
         "rmsAcceleration":  round(rms, 4),
         "spectralCentroid": round(spectral_centroid, 1),
+        "freqRatio":        freq_ratio,
+        "secondFreq":       round(second_freq, 1) if second_freq is not None else None,
         "qFactor":          round(q_factor, 1),
         "dampingRatio":     round(damping_ratio, 4),
         "decayTime":        round(decay_time_ms, 1),
@@ -552,6 +566,8 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "primaryFreq":      features["primaryFreq"],
         "spectralCentroid": features["spectralCentroid"],
         "rmsAcceleration":  features["rmsAcceleration"],
+        "freqRatio":        features["freqRatio"],
+        "secondFreq":       features["secondFreq"],
         "qFactor":          features["qFactor"],
         "dampingRatio":     features["dampingRatio"],
         "decayTime":        features["decayTime"],
