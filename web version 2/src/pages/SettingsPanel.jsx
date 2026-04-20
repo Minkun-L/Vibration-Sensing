@@ -27,13 +27,26 @@ export default function SettingsPanel() {
   const [errorMsg, setErrorMsg] = useState('')
   const [piOnline, setPiOnline] = useState(null) // null=checking, true, false
   const [features, setFeatures] = useState(null)  // features received from Pi after measurement
+  const [piIpDraft, setPiIpDraft] = useState(
+    () => localStorage.getItem(PI_IP_STORAGE_KEY) || DEFAULT_PI_IP
+  )
 
-  // Check Pi reachability on mount
-  useEffect(() => {
+  function checkConnection() {
+    setPiOnline(null)
     fetchStatus()
       .then(() => setPiOnline(true))
       .catch(() => setPiOnline(false))
-  }, [])
+  }
+
+  function saveAndTestIp() {
+    const trimmed = piIpDraft.trim()
+    if (!trimmed) return
+    localStorage.setItem(PI_IP_STORAGE_KEY, trimmed)
+    checkConnection()
+  }
+
+  // Check Pi reachability on mount
+  useEffect(() => { checkConnection() }, [])
 
   async function handleStart() {
     if (status === 'measuring') return
