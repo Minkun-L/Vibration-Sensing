@@ -49,3 +49,13 @@ export async function fetchHistory() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
+
+/**
+ * Fetch the latest FFT chart data from the Pi.
+ * Returns { points: [{freq, mag}, ...] } or throws on error.
+ */
+export async function fetchFftData() {
+  const res = await fetch(`${getPiBaseUrl()}/fft`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}

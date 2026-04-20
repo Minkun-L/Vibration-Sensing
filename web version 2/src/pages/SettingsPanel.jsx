@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Calendar, Clock, PlayCircle, CheckCircle2, Loader2, Monitor, WifiOff, Wifi, Save } from 'lucide-react'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { useTheme } from '../contexts/ThemeContext.jsx'
-import { triggerMeasurement, fetchStatus, fetchFeatures, DEFAULT_PI_IP, PI_IP_STORAGE_KEY } from '../lib/api.js'
+import { triggerMeasurement, fetchStatus, fetchFeatures, fetchFftData, DEFAULT_PI_IP, PI_IP_STORAGE_KEY } from '../lib/api.js'
 
 export default function SettingsPanel() {
   const { theme } = useTheme()
@@ -28,6 +29,7 @@ export default function SettingsPanel() {
   const [piOnline, setPiOnline] = useState(null) // null=checking, true, false
   const [features, setFeatures] = useState(null)  // features received from Pi after measurement
   const [note, setNote] = useState('')
+  const [fftData, setFftData] = useState(null)
   const [piIpDraft, setPiIpDraft] = useState(
     () => localStorage.getItem(PI_IP_STORAGE_KEY) || DEFAULT_PI_IP
   )
@@ -71,6 +73,12 @@ export default function SettingsPanel() {
         setFeatures(f)
       } catch {
         setFeatures(null)
+      }
+      try {
+        const fft = await fetchFftData()
+        setFftData(fft)
+      } catch {
+        setFftData(null)
       }
     } catch (e) {
       setStatus('error')
@@ -270,7 +278,7 @@ export default function SettingsPanel() {
               : <><PlayCircle size={14} /> Start Measurement Now</>}
           </button>
           {(status === 'done' || status === 'error') && (
-            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setNote('') }}>Reset</button>
+            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setFftData(null); setNote('') }}>Reset</button>
           )}
         </div>
 
@@ -303,6 +311,39 @@ export default function SettingsPanel() {
             <p style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', marginTop: 10 }}>
               Recorded at {new Date(features.timestamp).toLocaleString()}
             </p>
+            {fftData?.points?.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <p style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--muted-foreground)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+                  FFT Magnitude Spectrum
+                </p>
+                <ResponsiveContainer width="100%" height={180}>
+                  <LineChart data={fftData.points} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                    <XAxis
+                      dataKey="freq"
+                      type="number"
+                      domain={['dataMin', 'dataMax']}
+                      tickFormatter={v => `${v}Hz`}
+                      tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={40}
+                      tickFormatter={v => v.toFixed(3)}
+                    />
+                    <Tooltip
+                      formatter={v => [`${v.toFixed(4)} g`, 'Magnitude']}
+                      labelFormatter={l => `${l} Hz`}
+                      contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+                    />
+                    <Line type="monotone" dataKey="mag" stroke="#4ade80" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         )}
         {status === 'done' && !features && (

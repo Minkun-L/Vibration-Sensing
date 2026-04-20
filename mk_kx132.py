@@ -430,19 +430,24 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     if len(peak_starts) > 0:
         fft_freq = np.fft.rfftfreq(win_samples, d=1.0 / fs)
         avg_psd = np.zeros(len(fft_freq))
+        avg_fft_mag = np.zeros(len(fft_freq))
         hann = np.hanning(win_samples)
+        hann_sum = np.sum(hann)
         hann_ss = np.sum(hann ** 2)
         for w in windows:
             fv = np.fft.rfft(w * hann)
+            avg_fft_mag += 2.0 * np.abs(fv) / hann_sum
             p = np.abs(fv) ** 2 / (hann_ss * fs)
             p[1:-1] *= 2
             avg_psd += p
+        avg_fft_mag /= len(windows)
         avg_psd /= len(windows)
     else:
         n_full = len(z_hp)
         hann = np.hanning(n_full)
         fft_freq = np.fft.rfftfreq(n_full, d=1.0 / fs)
         fv = np.fft.rfft(z_hp * hann)
+        avg_fft_mag = 2.0 * np.abs(fv) / np.sum(hann)
         avg_psd = np.abs(fv) ** 2 / (np.sum(hann ** 2) * fs)
         avg_psd[1:-1] *= 2
 
@@ -450,6 +455,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     freq_mask = fft_freq >= HPF_CUTOFF_HZ
     psd_masked = avg_psd[freq_mask]
     freq_masked = fft_freq[freq_mask]
+    fft_mag_masked = avg_fft_mag[freq_mask]
 
     # ── Feature 1: Primary Resonance Frequency (peak of PSD above HPF cutoff) ──
     primary_freq = float(freq_masked[np.argmax(psd_masked)])
@@ -478,6 +484,19 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     }
     features_path = Path(__file__).parent / "features.json"
     features_path.write_text(json.dumps(features, indent=2))
+
+    # Write FFT chart data for the frontend
+    MAX_CHART_POINTS = 400
+    freqs_list = freq_masked.tolist()
+    mag_list = fft_mag_masked.tolist()
+    if len(freqs_list) > MAX_CHART_POINTS:
+        step = max(1, len(freqs_list) // MAX_CHART_POINTS)
+        freqs_list = freqs_list[::step]
+        mag_list = mag_list[::step]
+    fft_points = [{"freq": round(float(f), 1), "mag": round(float(m), 6)}
+                  for f, m in zip(freqs_list, mag_list)]
+    fft_data_path = Path(__file__).parent / "fft_data.json"
+    fft_data_path.write_text(json.dumps({"points": fft_points}))
 
     # Append to history.json for the frontend history table
     history_path = Path(__file__).parent / "history.json"

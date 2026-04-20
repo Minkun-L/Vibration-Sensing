@@ -25,6 +25,7 @@ _HERE = Path(__file__).parent
 FEATURES_FILE    = _HERE / "features.json"
 HISTORY_FILE     = _HERE / "history.json"
 PENDING_NOTE_FILE = _HERE / "pending_note.json"
+FFT_DATA_FILE    = _HERE / "fft_data.json"
 MK_SCRIPT        = _HERE / "mk_kx132.py"
 FLASK_PORT    = 5000
 
@@ -78,6 +79,17 @@ def api_history():
         return jsonify(json.loads(HISTORY_FILE.read_text()))
     except (json.JSONDecodeError, OSError) as exc:
         return jsonify({"error": f"Could not read history file: {exc}"}), 500
+
+
+@app.route("/fft")
+def api_fft():
+    """Return the latest FFT chart data written by mk_kx132.py."""
+    if not FFT_DATA_FILE.exists():
+        return jsonify({"error": "No FFT data yet"}), 404
+    try:
+        return jsonify(json.loads(FFT_DATA_FILE.read_text()))
+    except (json.JSONDecodeError, OSError) as exc:
+        return jsonify({"error": f"Could not read FFT file: {exc}"}), 500
 
 
 @app.route("/status")
