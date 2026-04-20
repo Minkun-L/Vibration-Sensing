@@ -301,6 +301,24 @@ export default function SettingsPanel() {
                 <span style={{ color: 'var(--muted-foreground)' }}>RMS Acceleration</span>
                 <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.rmsAcceleration?.toFixed(4)} g</span>
               </div>
+              {features.decayTime != null && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                  <span style={{ color: 'var(--muted-foreground)' }}>Decay Time</span>
+                  <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.decayTime.toFixed(1)} ms</span>
+                </div>
+              )}
+              {features.dampingRatio != null && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                  <span style={{ color: 'var(--muted-foreground)' }}>Damping Ratio ζ</span>
+                  <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.dampingRatio.toFixed(4)}</span>
+                </div>
+              )}
+              {features.qFactor != null && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                  <span style={{ color: 'var(--muted-foreground)' }}>Q Factor</span>
+                  <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.qFactor.toFixed(1)}</span>
+                </div>
+              )}
             </div>
             {features.note && (
               <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(74,222,128,0.15)' }}>

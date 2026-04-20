@@ -467,11 +467,47 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     else:
         spectral_centroid = 0.0
 
+    # ── Features: Q Factor, Damping Ratio, Decay Time (half-power bandwidth method) ──
+    # Find -3dB (half-power) crossing points around the primary frequency peak
+    peak_idx = int(np.argmax(psd_masked))
+    half_power = psd_masked[peak_idx] / 2.0
+    # Walk left from peak to find lower -3dB crossing
+    left_idx = peak_idx
+    while left_idx > 0 and psd_masked[left_idx] > half_power:
+        left_idx -= 1
+    # Interpolate for sub-bin accuracy
+    if left_idx < peak_idx and psd_masked[left_idx + 1] != psd_masked[left_idx]:
+        frac = (half_power - psd_masked[left_idx]) / (psd_masked[left_idx + 1] - psd_masked[left_idx])
+        f_lower = float(freq_masked[left_idx] + frac * (freq_masked[left_idx + 1] - freq_masked[left_idx]))
+    else:
+        f_lower = float(freq_masked[left_idx])
+    # Walk right from peak to find upper -3dB crossing
+    right_idx = peak_idx
+    while right_idx < len(psd_masked) - 1 and psd_masked[right_idx] > half_power:
+        right_idx += 1
+    if right_idx > peak_idx and psd_masked[right_idx] != psd_masked[right_idx - 1]:
+        frac = (psd_masked[right_idx - 1] - half_power) / (psd_masked[right_idx - 1] - psd_masked[right_idx])
+        f_upper = float(freq_masked[right_idx - 1] + frac * (freq_masked[right_idx] - freq_masked[right_idx - 1]))
+    else:
+        f_upper = float(freq_masked[right_idx])
+    bandwidth = f_upper - f_lower
+    if bandwidth > 0 and primary_freq > 0:
+        q_factor      = primary_freq / bandwidth
+        damping_ratio = 1.0 / (2.0 * q_factor)
+        decay_time_ms = (q_factor / (np.pi * primary_freq)) * 1000.0  # ms
+    else:
+        q_factor      = 0.0
+        damping_ratio = 0.0
+        decay_time_ms = 0.0
+    print(f"  Feature 2 — Q Factor                    : {q_factor:.1f}")
+    print(f"  Feature 3 — Damping Ratio               : {damping_ratio:.4f}")
+    print(f"  Feature 3 — Decay Time                  : {decay_time_ms:.1f} ms")
+    print("===========================\n")
+
     print("\n=== EXTRACTED FEATURES ===")
     print(f"  Feature 1 — Primary Resonance Frequency : {primary_freq:.1f} Hz")
     print(f"  Feature 4 — Spectral Centroid           : {spectral_centroid:.1f} Hz")
     print(f"  Feature 5 — RMS of Acceleration         : {rms:.4f} g")
-    print("===========================\n")
 
     # Write results to features.json so server.py can serve them to the frontend
     import json
@@ -480,6 +516,9 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "primaryFreq":      round(primary_freq, 1),
         "rmsAcceleration":  round(rms, 4),
         "spectralCentroid": round(spectral_centroid, 1),
+        "qFactor":          round(q_factor, 1),
+        "dampingRatio":     round(damping_ratio, 4),
+        "decayTime":        round(decay_time_ms, 1),
         "timestamp":        now.isoformat(),
     }
     features_path = Path(__file__).parent / "features.json"
@@ -513,6 +552,9 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "primaryFreq":      features["primaryFreq"],
         "spectralCentroid": features["spectralCentroid"],
         "rmsAcceleration":  features["rmsAcceleration"],
+        "qFactor":          features["qFactor"],
+        "dampingRatio":     features["dampingRatio"],
+        "decayTime":        features["decayTime"],
         "note":             note,
         "fftPoints":        fft_points,
     }
