@@ -294,7 +294,6 @@ export default function SettingsPanel() {
                 <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.rmsAcceleration?.toFixed(4)} g</span>
               </div>
             </div>
-            </div>
             {features.note && (
               <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(74,222,128,0.15)' }}>
                 <span style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Note: </span>
