@@ -57,8 +57,8 @@ export default function SettingsPanel() {
     setErrorMsg('')
     try {
       await triggerMeasurement(note)
-      // Poll /status until hasMeasurement flips or timeout (30s)
-      const deadline = Date.now() + 30000
+      // Poll /status until hasMeasurement flips or timeout (90s = 20s run + processing)
+      const deadline = Date.now() + 90000
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 1500))
         const s = await fetchStatus()

@@ -58,6 +58,9 @@ def api_trigger():
     data = request.get_json(silent=True) or {}
     note = str(data.get("note", "")).strip()
     PENDING_NOTE_FILE.write_text(json.dumps({"note": note}))
+    # Delete stale output files so hasMeasurement stays False until the new run finishes
+    FEATURES_FILE.unlink(missing_ok=True)
+    FFT_DATA_FILE.unlink(missing_ok=True)
     with _proc_lock:
         # Check if a previous process is still alive
         if _active_proc is not None and _active_proc.poll() is None:
