@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Calendar, Clock, PlayCircle, CheckCircle2, Loader2, Monitor, WifiOff } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext.jsx'
-import { triggerMeasurement, fetchStatus } from '../lib/api.js'
+import { triggerMeasurement, fetchStatus, fetchFeatures } from '../lib/api.js'
 
 export default function SettingsPanel() {
   const { theme } = useTheme()
@@ -26,6 +26,7 @@ export default function SettingsPanel() {
   const [completedAt, setCompletedAt] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
   const [piOnline, setPiOnline] = useState(null) // null=checking, true, false
+  const [features, setFeatures] = useState(null)  // features received from Pi after measurement
 
   // Check Pi reachability on mount
   useEffect(() => {
@@ -50,6 +51,13 @@ export default function SettingsPanel() {
       setStatus('done')
       setCompletedAt(new Date().toLocaleTimeString())
       setPiOnline(true)
+      // Fetch the features that were just written by mk_kx132.py
+      try {
+        const f = await fetchFeatures()
+        setFeatures(f)
+      } catch {
+        setFeatures(null)
+      }
     } catch (e) {
       setStatus('error')
       setErrorMsg('Could not reach the Pi. Make sure you are connected to the Pi hotspot.')
@@ -198,9 +206,40 @@ export default function SettingsPanel() {
               : <><PlayCircle size={14} /> Start Measurement Now</>}
           </button>
           {(status === 'done' || status === 'error') && (
-            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg('') }}>Reset</button>
+            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null) }}>Reset</button>
           )}
         </div>
+
+        {/* ── Features result ───────────────────────────────────────────────── */}
+        {status === 'done' && features && (
+          <div style={{ marginTop: 20, padding: 16, borderRadius: 'var(--radius)', background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.25)' }}>
+            <p style={{ fontSize: '0.65rem', fontWeight: 600, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
+              Measurement Results
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                <span style={{ color: 'var(--muted-foreground)' }}>Primary Resonance Frequency</span>
+                <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.primaryFreq} Hz</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                <span style={{ color: 'var(--muted-foreground)' }}>Spectral Centroid</span>
+                <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.spectralCentroid} Hz</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                <span style={{ color: 'var(--muted-foreground)' }}>RMS Acceleration</span>
+                <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.rmsAcceleration?.toFixed(4)} g</span>
+              </div>
+            </div>
+            <p style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', marginTop: 10 }}>
+              Recorded at {new Date(features.timestamp).toLocaleString()}
+            </p>
+          </div>
+        )}
+        {status === 'done' && !features && (
+          <div style={{ marginTop: 20, padding: '12px 14px', borderRadius: 'var(--radius)', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)' }}>
+            <p style={{ fontSize: '0.8rem', color: '#fbbf24' }}>Measurement completed but features could not be retrieved from the Pi.</p>
+          </div>
+        )}
       </div>
 
       <p style={{ marginTop: 20, fontSize: '0.7rem', color: 'var(--muted-foreground)', lineHeight: 1.6 }}>
