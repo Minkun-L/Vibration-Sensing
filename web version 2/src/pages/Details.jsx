@@ -156,7 +156,7 @@ function HistoryTable() {
           <thead>
             {useMock
               ? <tr>{['Date','f₁ (Hz)','f₂/f₁','Decay (ms)','ζ','Q','Centroid (Hz)','RMS (g)','Thickness'].map(h => <th key={h}>{h}</th>)}</tr>
-              : <tr>{['Date','f₁ (Hz)','Centroid (Hz)','RMS (g)'].map(h => <th key={h}>{h}</th>)}</tr>
+              : <tr>{['Date','f₁ (Hz)','Centroid (Hz)','RMS (g)','Note'].map(h => <th key={h}>{h}</th>)}</tr>
             }
           </thead>
           <tbody>
@@ -184,6 +184,7 @@ function HistoryTable() {
                     <td>{r.primaryFreq}</td>
                     <td>{r.spectralCentroid}</td>
                     <td>{r.rmsAcceleration.toFixed(2)}</td>
+                    <td style={{ color: 'var(--muted-foreground)', fontStyle: r.note ? 'normal' : 'italic' }}>{r.note || '—'}</td>
                   </tr>
                 ))
             }

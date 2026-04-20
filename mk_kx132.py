@@ -481,6 +481,12 @@ def compute_features(csv_path, sampling_rate_hz=FS):
 
     # Append to history.json for the frontend history table
     history_path = Path(__file__).parent / "history.json"
+    pending_note_path = Path(__file__).parent / "pending_note.json"
+    try:
+        note = json.loads(pending_note_path.read_text()).get("note", "") if pending_note_path.exists() else ""
+        pending_note_path.unlink(missing_ok=True)   # consume it
+    except (json.JSONDecodeError, OSError):
+        note = ""
     record = {
         "id":               f"m{now.strftime('%Y%m%d%H%M%S')}",
         "timestamp":        features["timestamp"],
@@ -488,6 +494,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "primaryFreq":      features["primaryFreq"],
         "spectralCentroid": features["spectralCentroid"],
         "rmsAcceleration":  features["rmsAcceleration"],
+        "note":             note,
     }
     try:
         history = json.loads(history_path.read_text()) if history_path.exists() else []

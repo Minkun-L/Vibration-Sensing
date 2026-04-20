@@ -27,6 +27,7 @@ export default function SettingsPanel() {
   const [errorMsg, setErrorMsg] = useState('')
   const [piOnline, setPiOnline] = useState(null) // null=checking, true, false
   const [features, setFeatures] = useState(null)  // features received from Pi after measurement
+  const [note, setNote] = useState('')
   const [piIpDraft, setPiIpDraft] = useState(
     () => localStorage.getItem(PI_IP_STORAGE_KEY) || DEFAULT_PI_IP
   )
@@ -53,7 +54,7 @@ export default function SettingsPanel() {
     setStatus('measuring')
     setErrorMsg('')
     try {
-      await triggerMeasurement()
+      await triggerMeasurement(note)
       // Poll /status until hasMeasurement flips or timeout (30s)
       const deadline = Date.now() + 30000
       while (Date.now() < deadline) {
@@ -212,6 +213,18 @@ export default function SettingsPanel() {
           </span>
         </div>
 
+        <label style={{ display: 'block', fontSize: '0.65rem', color: 'var(--muted-foreground)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Run Note (optional)
+        </label>
+        <input
+          type="text"
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          placeholder="e.g. baseline, after impact, liner replaced..."
+          disabled={status === 'measuring'}
+          style={{ marginBottom: 16 }}
+        />
+
         {status === 'idle' && (
           <p style={{ fontSize: '0.875rem', color: 'var(--muted-foreground)', marginBottom: 16 }}>
             Click the button below to start a measurement immediately. The sensor will collect vibration data for approximately 4 seconds.
@@ -257,7 +270,7 @@ export default function SettingsPanel() {
               : <><PlayCircle size={14} /> Start Measurement Now</>}
           </button>
           {(status === 'done' || status === 'error') && (
-            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null) }}>Reset</button>
+            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setNote('') }}>Reset</button>
           )}
         </div>
 
@@ -281,6 +294,13 @@ export default function SettingsPanel() {
                 <span style={{ fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>{features.rmsAcceleration?.toFixed(4)} g</span>
               </div>
             </div>
+            </div>
+            {features.note && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(74,222,128,0.15)' }}>
+                <span style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Note: </span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--foreground)' }}>{features.note}</span>
+              </div>
+            )}
             <p style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', marginTop: 10 }}>
               Recorded at {new Date(features.timestamp).toLocaleString()}
             </p>

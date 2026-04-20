@@ -17,14 +17,15 @@ import subprocess
 import threading
 from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 _HERE = Path(__file__).parent
-FEATURES_FILE = _HERE / "features.json"
-HISTORY_FILE  = _HERE / "history.json"
-MK_SCRIPT     = _HERE / "mk_kx132.py"
+FEATURES_FILE    = _HERE / "features.json"
+HISTORY_FILE     = _HERE / "history.json"
+PENDING_NOTE_FILE = _HERE / "pending_note.json"
+MK_SCRIPT        = _HERE / "mk_kx132.py"
 FLASK_PORT    = 5000
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -52,6 +53,10 @@ def api_features():
 def api_trigger():
     """Start a measurement run.  Returns 409 if one is already running."""
     global _active_proc
+    # Save optional note so mk_kx132.py can attach it to the history record
+    data = request.get_json(silent=True) or {}
+    note = str(data.get("note", "")).strip()
+    PENDING_NOTE_FILE.write_text(json.dumps({"note": note}))
     with _proc_lock:
         # Check if a previous process is still alive
         if _active_proc is not None and _active_proc.poll() is None:

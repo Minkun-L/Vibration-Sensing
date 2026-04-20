@@ -19,9 +19,14 @@ export async function fetchFeatures() {
 
 /**
  * POST to /trigger to start a measurement on the Pi immediately.
+ * @param {string} note  Optional user note attached to this run.
  */
-export async function triggerMeasurement() {
-  const res = await fetch(`${getPiBaseUrl()}/trigger`, { method: 'POST' })
+export async function triggerMeasurement(note = '') {
+  const res = await fetch(`${getPiBaseUrl()}/trigger`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
