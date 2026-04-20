@@ -23,6 +23,7 @@ from flask_cors import CORS
 # ── Paths ──────────────────────────────────────────────────────────────────
 _HERE = Path(__file__).parent
 FEATURES_FILE = _HERE / "features.json"
+HISTORY_FILE  = _HERE / "history.json"
 MK_SCRIPT     = _HERE / "mk_kx132.py"
 FLASK_PORT    = 5000
 
@@ -61,6 +62,17 @@ def api_trigger():
             cwd=str(_HERE),
         )
     return jsonify({"status": "triggered"})
+
+
+@app.route("/history")
+def api_history():
+    """Return the full measurement history written by mk_kx132.py."""
+    if not HISTORY_FILE.exists():
+        return jsonify([])
+    try:
+        return jsonify(json.loads(HISTORY_FILE.read_text()))
+    except (json.JSONDecodeError, OSError) as exc:
+        return jsonify({"error": f"Could not read history file: {exc}"}), 500
 
 
 @app.route("/status")

@@ -469,14 +469,32 @@ def compute_features(csv_path, sampling_rate_hz=FS):
 
     # Write results to features.json so server.py can serve them to the frontend
     import json
+    now = datetime.now()
     features = {
         "primaryFreq":      round(primary_freq, 1),
         "rmsAcceleration":  round(rms, 4),
         "spectralCentroid": round(spectral_centroid, 1),
-        "timestamp":        datetime.now().isoformat(),
+        "timestamp":        now.isoformat(),
     }
     features_path = Path(__file__).parent / "features.json"
     features_path.write_text(json.dumps(features, indent=2))
+
+    # Append to history.json for the frontend history table
+    history_path = Path(__file__).parent / "history.json"
+    record = {
+        "id":               f"m{now.strftime('%Y%m%d%H%M%S')}",
+        "timestamp":        features["timestamp"],
+        "date":             now.strftime("%b %-d"),
+        "primaryFreq":      features["primaryFreq"],
+        "spectralCentroid": features["spectralCentroid"],
+        "rmsAcceleration":  features["rmsAcceleration"],
+    }
+    try:
+        history = json.loads(history_path.read_text()) if history_path.exists() else []
+    except (json.JSONDecodeError, OSError):
+        history = []
+    history.append(record)
+    history_path.write_text(json.dumps(history, indent=2))
  
 
 # =========================

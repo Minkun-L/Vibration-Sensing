@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from 'recharts'
 import { mockHistory, latestMeasurement, getThicknessStatus } from '../lib/mockData.js'
-import { fetchFeatures } from '../lib/api.js'
+import { fetchFeatures, fetchHistory } from '../lib/api.js'
 import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 // ── Feature row ───────────────────────────────────────────────────────────────
@@ -122,37 +122,71 @@ function FreqChart() {
 
 // ── History table ─────────────────────────────────────────────────────────────
 function HistoryTable() {
-  const rows = [...mockHistory].reverse()
-  const headers = ['Date', 'f₁ (Hz)', 'f₂/f₁', 'Decay (ms)', 'ζ', 'Q', 'Centroid (Hz)', 'RMS (g)', 'Thickness']
+  const [liveHistory, setLiveHistory] = useState(null)  // null = not loaded yet
+  const [histSrc, setHistSrc] = useState('loading')     // loading | live | mock
+
+  useEffect(() => {
+    fetchHistory()
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setLiveHistory([...data].reverse())
+          setHistSrc('live')
+        } else {
+          setHistSrc('mock')
+        }
+      })
+      .catch(() => setHistSrc('mock'))
+  }, [])
+
+  const useMock = histSrc === 'mock' || histSrc === 'loading'
+  const rows    = useMock ? [...mockHistory].reverse() : liveHistory
+
   return (
     <div className="card overflow-hidden">
       <div className="card-header">
         <div className="card-title">Measurement History</div>
-        <div className="card-sub">All recorded sessions, newest first</div>
+        <div className="card-sub">
+          {histSrc === 'live' && `${liveHistory.length} recorded sessions from Pi · newest first`}
+          {histSrc === 'mock' && 'Pi offline — showing mock data · newest first'}
+          {histSrc === 'loading' && 'Loading...'}
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table>
           <thead>
-            <tr>{headers.map(h => <th key={h}>{h}</th>)}</tr>
+            {useMock
+              ? <tr>{['Date','f₁ (Hz)','f₂/f₁','Decay (ms)','ζ','Q','Centroid (Hz)','RMS (g)','Thickness'].map(h => <th key={h}>{h}</th>)}</tr>
+              : <tr>{['Date','f₁ (Hz)','Centroid (Hz)','RMS (g)'].map(h => <th key={h}>{h}</th>)}</tr>
+            }
           </thead>
           <tbody>
-            {rows.map((r, i) => {
-              const status = getThicknessStatus(r.linerThicknessPct)
-              const color = status === 'healthy' ? '#4ade80' : status === 'warning' ? '#fbbf24' : '#f87171'
-              return (
-                <tr key={r.id} style={{ opacity: i === 0 ? 1 : 0.85 }}>
-                  <td style={{ fontWeight: 500 }}>{r.date}</td>
-                  <td>{r.primaryFreq}</td>
-                  <td>{r.freqRatio.toFixed(2)}</td>
-                  <td>{r.decayTime}</td>
-                  <td>{r.dampingRatio.toFixed(3)}</td>
-                  <td>{r.qFactor.toFixed(1)}</td>
-                  <td>{r.spectralCentroid}</td>
-                  <td>{r.rmsAcceleration.toFixed(2)}</td>
-                  <td style={{ fontWeight: 600, color }}>{r.linerThicknessPct}%</td>
-                </tr>
-              )
-            })}
+            {useMock
+              ? rows.map((r, i) => {
+                  const status = getThicknessStatus(r.linerThicknessPct)
+                  const color = status === 'healthy' ? '#4ade80' : status === 'warning' ? '#fbbf24' : '#f87171'
+                  return (
+                    <tr key={r.id} style={{ opacity: i === 0 ? 1 : 0.85 }}>
+                      <td style={{ fontWeight: 500 }}>{r.date}</td>
+                      <td>{r.primaryFreq}</td>
+                      <td>{r.freqRatio.toFixed(2)}</td>
+                      <td>{r.decayTime}</td>
+                      <td>{r.dampingRatio.toFixed(3)}</td>
+                      <td>{r.qFactor.toFixed(1)}</td>
+                      <td>{r.spectralCentroid}</td>
+                      <td>{r.rmsAcceleration.toFixed(2)}</td>
+                      <td style={{ fontWeight: 600, color }}>{r.linerThicknessPct}%</td>
+                    </tr>
+                  )
+                })
+              : rows.map((r, i) => (
+                  <tr key={r.id} style={{ opacity: i === 0 ? 1 : 0.85 }}>
+                    <td style={{ fontWeight: 500 }}>{r.date}</td>
+                    <td>{r.primaryFreq}</td>
+                    <td>{r.spectralCentroid}</td>
+                    <td>{r.rmsAcceleration.toFixed(2)}</td>
+                  </tr>
+                ))
+            }
           </tbody>
         </table>
       </div>

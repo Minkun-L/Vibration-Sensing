@@ -34,3 +34,13 @@ export async function fetchStatus() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
+
+/**
+ * Fetch the full measurement history recorded on the Pi.
+ * Returns an array of records or throws on error.
+ */
+export async function fetchHistory() {
+  const res = await fetch(`${getPiBaseUrl()}/history`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
