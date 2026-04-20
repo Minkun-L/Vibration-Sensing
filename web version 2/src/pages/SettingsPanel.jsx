@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Calendar, Clock, PlayCircle, CheckCircle2, Loader2, Monitor, WifiOff } from 'lucide-react'
+import { Calendar, Clock, PlayCircle, CheckCircle2, Loader2, Monitor, WifiOff, Wifi, Save } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext.jsx'
-import { triggerMeasurement, fetchStatus, fetchFeatures } from '../lib/api.js'
+import { triggerMeasurement, fetchStatus, fetchFeatures, DEFAULT_PI_IP, PI_IP_STORAGE_KEY } from '../lib/api.js'
 
 export default function SettingsPanel() {
   const { theme } = useTheme()
@@ -90,6 +90,44 @@ export default function SettingsPanel() {
         <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--foreground)', letterSpacing: '-0.01em' }}>Measurement Settings</h2>
         <p style={{ fontSize: '0.875rem', color: 'var(--muted-foreground)', marginTop: 4 }}>
           Configure the next scheduled measurement or start one immediately.
+        </p>
+      </div>
+
+      {/* ── Pi Connection ───────────────────────────────────────────────────── */}
+      <div className="card" style={{ padding: 24, marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+          <Wifi size={16} style={{ color: 'var(--primary)' }} />
+          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--foreground)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Pi Connection
+          </span>
+        </div>
+
+        <label style={{ display: 'block', fontSize: '0.65rem', color: 'var(--muted-foreground)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Pi IP Address
+        </label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="text"
+            value={piIpDraft}
+            onChange={e => setPiIpDraft(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && saveAndTestIp()}
+            placeholder="192.168.4.1"
+            style={{ flex: 1, fontFamily: 'var(--font-mono)' }}
+          />
+          <button className="btn-outline" onClick={saveAndTestIp} style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+            <Save size={13} /> Save &amp; Test
+          </button>
+        </div>
+        <p style={{ marginTop: 8, fontSize: '0.7rem', color: 'var(--muted-foreground)', lineHeight: 1.5 }}>
+          Use <code style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem' }}>192.168.4.1</code> when connected to the Pi hotspot,
+          or the router-assigned IP when both devices share the same WiFi.
+        </p>
+        <p style={{ marginTop: 8, fontSize: '0.7rem', lineHeight: 1.5,
+          color: piOnline === true ? '#4ade80' : piOnline === false ? '#f87171' : 'var(--muted-foreground)'
+        }}>
+          {piOnline === null  && '⏳ Checking connection...'}
+          {piOnline === true  && '✅ Pi is reachable.'}
+          {piOnline === false && '⚠️ Pi not reachable at this address.'}
         </p>
       </div>
 
@@ -242,12 +280,7 @@ export default function SettingsPanel() {
         )}
       </div>
 
-      <p style={{ marginTop: 20, fontSize: '0.7rem', color: 'var(--muted-foreground)', lineHeight: 1.6 }}>
-        <strong style={{ color: 'var(--foreground)', opacity: 0.6 }}>Connection:</strong>{' '}
-        {piOnline === null && 'Checking Pi connection...'}
-        {piOnline === true  && '✅ Pi is reachable on the hotspot network.'}
-        {piOnline === false && '⚠️ Pi not reachable. Connect your device to the Pi hotspot (192.168.4.1).'}
-      </p>
+
     </div>
   )
 }
