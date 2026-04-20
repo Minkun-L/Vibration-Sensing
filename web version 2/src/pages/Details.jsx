@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { mockHistory, latestMeasurement, getThicknessStatus } from '../lib/mockData.js'
 import { fetchFeatures, fetchHistory } from '../lib/api.js'
-import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw } from 'lucide-react'
+import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw, X } from 'lucide-react'
 
 // ── Feature row ───────────────────────────────────────────────────────────────
 function FeatureItem({ icon, label, sub, value, unit, extra }) {
@@ -124,6 +124,7 @@ function FreqChart() {
 function HistoryTable() {
   const [liveHistory, setLiveHistory] = useState(null)  // null = not loaded yet
   const [histSrc, setHistSrc] = useState('loading')     // loading | live | mock
+  const [selectedRow, setSelectedRow] = useState(null)  // selected history record
 
   useEffect(() => {
     fetchHistory()
@@ -179,7 +180,16 @@ function HistoryTable() {
                   )
                 })
               : rows.map((r, i) => (
-                  <tr key={r.id} style={{ opacity: i === 0 ? 1 : 0.85 }}>
+                  <tr
+                    key={r.id}
+                    style={{
+                      opacity: i === 0 ? 1 : 0.85,
+                      cursor: r.fftPoints?.length ? 'pointer' : 'default',
+                      background: selectedRow?.id === r.id ? 'rgba(96,165,250,0.08)' : undefined,
+                    }}
+                    onClick={() => r.fftPoints?.length && setSelectedRow(selectedRow?.id === r.id ? null : r)}
+                    title={r.fftPoints?.length ? 'Click to view FFT' : undefined}
+                  >
                     <td style={{ fontWeight: 500 }}>{r.date}</td>
                     <td>{r.primaryFreq}</td>
                     <td>{r.spectralCentroid}</td>
@@ -191,6 +201,59 @@ function HistoryTable() {
           </tbody>
         </table>
       </div>
+
+      {/* ── Per-measurement FFT panel ──────────────────────────────────────── */}
+      {selectedRow && selectedRow.fftPoints?.length > 0 && (
+        <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div>
+              <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--foreground)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                FFT Magnitude — {selectedRow.date}
+              </span>
+              {selectedRow.note && (
+                <span style={{ fontSize: '0.7rem', color: 'var(--muted-foreground)', marginLeft: 8 }}>· {selectedRow.note}</span>
+              )}
+              <span style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', marginLeft: 8 }}>
+                f₁ = {selectedRow.primaryFreq} Hz · Centroid = {selectedRow.spectralCentroid} Hz · RMS = {selectedRow.rmsAcceleration.toFixed(4)} g
+              </span>
+            </div>
+            <button
+              onClick={() => setSelectedRow(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted-foreground)', padding: 2 }}
+              title="Close chart"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={selectedRow.fftPoints} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <XAxis
+                dataKey="freq"
+                type="number"
+                domain={['dataMin', 'dataMax']}
+                tickFormatter={v => `${v}Hz`}
+                tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                axisLine={false}
+                tickLine={false}
+                width={44}
+                tickFormatter={v => v.toFixed(3)}
+              />
+              <Tooltip
+                formatter={v => [`${v.toFixed(4)} g`, 'Magnitude']}
+                labelFormatter={l => `${l} Hz`}
+                contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+              />
+              <ReferenceLine x={selectedRow.primaryFreq} stroke="rgba(96,165,250,0.5)" strokeDasharray="3 3" label={{ value: `f₁=${selectedRow.primaryFreq}Hz`, fill: 'rgba(96,165,250,0.7)', fontSize: 9, position: 'insideTopRight' }} />
+              <Line type="monotone" dataKey="mag" stroke="#60a5fa" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   )
 }

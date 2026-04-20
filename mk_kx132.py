@@ -514,6 +514,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "spectralCentroid": features["spectralCentroid"],
         "rmsAcceleration":  features["rmsAcceleration"],
         "note":             note,
+        "fftPoints":        fft_points,
     }
     try:
         history = json.loads(history_path.read_text()) if history_path.exists() else []
