@@ -157,6 +157,104 @@ function HistoryTable() {
           {histSrc === 'loading' && 'Loading...'}
         </div>
       </div>
+
+      {/* ── Per-measurement FFT panel (above table) ───────────────────────── */}
+      {selectedRow && selectedRow.fftPoints?.length > 0 && (
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div>
+              <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--foreground)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                {selectedRow.date}
+              </span>
+              {selectedRow.note && (
+                <span style={{ fontSize: '0.7rem', color: 'var(--muted-foreground)', marginLeft: 8 }}>· {selectedRow.note}</span>
+              )}
+            </div>
+            <button
+              onClick={() => setSelectedRow(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted-foreground)', padding: 2 }}
+              title="Close chart"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {/* ── Time series ── */}
+          {selectedRow.timePoints?.length > 0 && (
+            <>
+              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--muted-foreground)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                Time Series (HPF) — {selectedRow.peakWindows?.length ?? 0} peak windows detected
+              </div>
+              <ResponsiveContainer width="100%" height={160}>
+                <LineChart
+                  data={(selectedRow.timePoints).filter(p => Number.isFinite(p.t) && Number.isFinite(p.z))}
+                  margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
+                >
+                  <XAxis
+                    dataKey="t"
+                    type="number"
+                    domain={['dataMin', 'dataMax']}
+                    tickFormatter={v => Number.isFinite(v) ? `${v.toFixed(1)}s` : ''}
+                    tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={44}
+                    tickFormatter={v => Number.isFinite(v) ? v.toFixed(2) : ''}
+                  />
+                  <Tooltip
+                    formatter={v => [Number.isFinite(v) ? `${v.toFixed(4)} g` : '—', 'Z (HPF)']}
+                    labelFormatter={l => Number.isFinite(+l) ? `${(+l).toFixed(3)} s` : ''}
+                    contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+                  />
+                  {(selectedRow.peakWindows ?? []).flatMap((pw, i) => [
+                    <ReferenceLine key={`s${i}`} x={pw.tStart} stroke="rgba(239,68,68,0.6)" strokeDasharray="3 2" strokeWidth={1} />,
+                    <ReferenceLine key={`e${i}`} x={pw.tEnd}   stroke="rgba(239,68,68,0.3)" strokeDasharray="3 2" strokeWidth={1} />,
+                  ])}
+                  <Line type="monotone" dataKey="z" stroke="#94a3b8" dot={false} strokeWidth={1} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+              <div style={{ marginBottom: 16 }} />
+            </>
+          )}
+
+          {/* ── FFT Magnitude ── */}
+          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--muted-foreground)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+            FFT Magnitude · f₁ = {selectedRow.primaryFreq} Hz · Centroid = {selectedRow.spectralCentroid} Hz · RMS = {selectedRow.rmsAcceleration?.toFixed(4) ?? '—'} g
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={selectedRow.fftPoints} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <XAxis
+                dataKey="freq"
+                type="number"
+                domain={['dataMin', 'dataMax']}
+                tickFormatter={v => `${v}Hz`}
+                tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
+                axisLine={false}
+                tickLine={false}
+                width={44}
+                tickFormatter={v => v.toFixed(3)}
+              />
+              <Tooltip
+                formatter={v => [`${v.toFixed(4)} g`, 'Magnitude']}
+                labelFormatter={l => `${l} Hz`}
+                contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+              />
+              <ReferenceLine x={selectedRow.primaryFreq} stroke="rgba(96,165,250,0.5)" strokeDasharray="3 3" label={{ value: `f₁=${selectedRow.primaryFreq}Hz`, fill: 'rgba(96,165,250,0.7)', fontSize: 9, position: 'insideTopRight' }} />
+              <Line type="monotone" dataKey="mag" stroke="#60a5fa" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table>
           <thead>
@@ -210,59 +308,6 @@ function HistoryTable() {
           </tbody>
         </table>
       </div>
-
-      {/* ── Per-measurement FFT panel ──────────────────────────────────────── */}
-      {selectedRow && selectedRow.fftPoints?.length > 0 && (
-        <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <div>
-              <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--foreground)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                FFT Magnitude — {selectedRow.date}
-              </span>
-              {selectedRow.note && (
-                <span style={{ fontSize: '0.7rem', color: 'var(--muted-foreground)', marginLeft: 8 }}>· {selectedRow.note}</span>
-              )}
-              <span style={{ fontSize: '0.65rem', color: 'var(--muted-foreground)', marginLeft: 8 }}>
-                f₁ = {selectedRow.primaryFreq} Hz · Centroid = {selectedRow.spectralCentroid} Hz · RMS = {selectedRow.rmsAcceleration.toFixed(4)} g
-              </span>
-            </div>
-            <button
-              onClick={() => setSelectedRow(null)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted-foreground)', padding: 2 }}
-              title="Close chart"
-            >
-              <X size={14} />
-            </button>
-          </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={selectedRow.fftPoints} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-              <XAxis
-                dataKey="freq"
-                type="number"
-                domain={['dataMin', 'dataMax']}
-                tickFormatter={v => `${v}Hz`}
-                tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                tick={{ fontSize: 9, fill: 'var(--muted-foreground)' }}
-                axisLine={false}
-                tickLine={false}
-                width={44}
-                tickFormatter={v => v.toFixed(3)}
-              />
-              <Tooltip
-                formatter={v => [`${v.toFixed(4)} g`, 'Magnitude']}
-                labelFormatter={l => `${l} Hz`}
-                contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11 }}
-              />
-              <ReferenceLine x={selectedRow.primaryFreq} stroke="rgba(96,165,250,0.5)" strokeDasharray="3 3" label={{ value: `f₁=${selectedRow.primaryFreq}Hz`, fill: 'rgba(96,165,250,0.7)', fontSize: 9, position: 'insideTopRight' }} />
-              <Line type="monotone" dataKey="mag" stroke="#60a5fa" dot={false} strokeWidth={1.5} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import time
 import csv
 import ctypes
+import subprocess
 import threading
 import multiprocessing
 from pathlib import Path
@@ -11,12 +12,6 @@ try:
     import plotly.graph_objects as go
 except ImportError as exc:
     raise ImportError("plotly is required. Install with: pip install plotly") from exc
-
-try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
 
 # =========================
 # SPI setup (C library via ctypes)
@@ -68,11 +63,8 @@ CHUNK_SIZE = 40        # XYZ samples per read (FIFO max=86 in 16-bit mode)
 FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 # HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
 KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
-RELAY_PIN = 27
-RELAY_ON_S = 0.05
-RELAY_OFF_S = 1.95
 HPF_CUTOFF_HZ = 10.0      # high-pass filter cutoff (Hz) — used in export and feature extraction
-MEASURE_DURATION_S = 20   # how long to collect data per run (seconds)
+MEASURE_DURATION_S = 13   # how long to collect data per run (seconds)
 # =========================
 # SPI helpers
 # =========================
@@ -128,6 +120,7 @@ def get_fifo_sample_count():
     if status2 & 0x80:
         print("FIFO OVERFLOW! resetting...")
         write_reg(BUF_CLEAR, 0x00)
+        return 0  # return 0 so collect_data waits for fresh data after the clear
     hi = status2 & 0x07  # bits 2:0
     raw_count = (hi << 8) | lo
     # SMP_LEV counts bytes in FIFO; divide by 6 for XYZ sample sets (16-bit mode)
@@ -169,8 +162,37 @@ def collect_data(num_samples):
     # Vectorized decode: reshape to (n_to_read, 6), extract Z only
     raw = raw.reshape(n_to_read, 6)
     z_raw = (raw[:, 5].astype(np.int16) << 8) | raw[:, 4]
- 
-    return FS, z_raw * KX132_G_PER_LSB
+    z_g = z_raw * KX132_G_PER_LSB
+
+    # Sanity clamp: KX132 is configured for ±8 g; anything beyond ±9 g is
+    # a corrupt read (usually from a cs_change / auto-increment misfire or
+    # loose SPI wiring causing a momentary open circuit).
+    MAX_VALID_G = 9.0
+    corrupt = np.abs(z_g) > MAX_VALID_G
+    if corrupt.any():
+        n_corrupt = int(corrupt.sum())
+        raw_vals = z_raw[corrupt].tolist()
+        # Diagnose the pattern: all-0xFF → MISO floating high (wire open)
+        #                       all-0x00 → MISO floating low  (wire open)
+        #                       specific values → register auto-increment
+        raw_bytes_corrupt = raw[corrupt]
+        all_ff = bool(np.all(raw_bytes_corrupt == 0xFF))
+        all_00 = bool(np.all(raw_bytes_corrupt == 0x00))
+        if all_ff or all_00:
+            print(f"WARNING: {n_corrupt} corrupt sample(s) — MISO line appears OPEN CIRCUIT "
+                  f"({'0xFF' if all_ff else '0x00'} pattern). CHECK WIRING.")
+        else:
+            # Verify WHO_AM_I to confirm SPI bus is still alive
+            who = read_reg(WHO_AM_I)[0]
+            if who != 0x3D:
+                print(f"WARNING: {n_corrupt} corrupt sample(s) AND WHO_AM_I={hex(who)} "
+                      f"(expected 0x3D) — SPI BUS FAULT. CHECK WIRING.")
+            else:
+                print(f"Warning: {n_corrupt} corrupt sample(s) clamped (|z| > {MAX_VALID_G}g) "
+                      f"— raw Z bytes: {raw_vals[:4]}. SPI bus OK (WHO_AM_I=0x3D).")
+        z_g[corrupt] = 0.0
+
+    return FS, z_g
  
  
 CSV_WRITE_THRESHOLD = 1000
@@ -385,7 +407,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
 # Feature extraction
 # =========================
 def compute_features(csv_path, sampling_rate_hz=FS):
-    from scipy.signal import butter, sosfilt
+    from scipy.signal import butter, sosfilt, find_peaks
 
     csv_file_path = Path(csv_path)
     data = np.genfromtxt(csv_file_path, delimiter=",", names=True)
@@ -471,7 +493,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     # Find the second distinct PSD peak, requiring at least max(50 Hz, 30% of f₁) separation
     freq_resolution = float(freq_masked[1] - freq_masked[0]) if len(freq_masked) > 1 else 1.0
     min_sep_bins = max(2, int(max(50.0, 0.3 * primary_freq) / freq_resolution))
-    candidate_peaks, _ = _find_peaks(psd_masked, distance=min_sep_bins)
+    candidate_peaks, _ = find_peaks(psd_masked, distance=min_sep_bins)
     if len(candidate_peaks) >= 2:
         sorted_peaks = sorted(candidate_peaks, key=lambda i: psd_masked[i], reverse=True)
         second_freq = float(freq_masked[sorted_peaks[1]])
@@ -551,6 +573,19 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     fft_data_path = Path(__file__).parent / "fft_data.json"
     fft_data_path.write_text(json.dumps({"points": fft_points}))
 
+    # Build sampled time-series data for the frontend
+    MAX_TIME_POINTS = 500
+    ts_step = max(1, len(z_hp) // MAX_TIME_POINTS)
+    ts_indices = np.arange(0, len(z_hp), ts_step)
+    time_points = [
+        {"t": round(float(i / fs), 4), "z": round(float(z_hp[i]), 5)}
+        for i in ts_indices
+    ]
+    peak_windows = [
+        {"tStart": round(float(ps / fs), 4), "tEnd": round(float((ps + win_samples) / fs), 4)}
+        for ps in peak_starts
+    ]
+
     # Append to history.json for the frontend history table
     history_path = Path(__file__).parent / "history.json"
     pending_note_path = Path(__file__).parent / "pending_note.json"
@@ -573,6 +608,8 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "decayTime":        features["decayTime"],
         "note":             note,
         "fftPoints":        fft_points,
+        "timePoints":       time_points,
+        "peakWindows":      peak_windows,
     }
     try:
         history = json.loads(history_path.read_text()) if history_path.exists() else []
@@ -667,31 +704,6 @@ try:
 except ImportError:
     pass
  
-relay_stop_event = threading.Event()
-
-def relay_thread_func():
-    state_on = False
-    last_toggle = time.perf_counter()
-    GPIO.output(RELAY_PIN, GPIO.LOW)
-    while not relay_stop_event.is_set():
-        now = time.perf_counter()
-        period = RELAY_ON_S if state_on else RELAY_OFF_S
-        if now - last_toggle >= period:
-            state_on = not state_on
-            GPIO.output(RELAY_PIN, GPIO.HIGH if state_on else GPIO.LOW)
-            last_toggle = now
-        relay_stop_event.wait(timeout=0.001)
-    GPIO.output(RELAY_PIN, GPIO.LOW)
-
-if GPIO_AVAILABLE:
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(RELAY_PIN, GPIO.OUT)
-    GPIO.output(RELAY_PIN, GPIO.LOW)
-    print(GPIO.gpio_function(27))
-    relay_thread = threading.Thread(target=relay_thread_func, daemon=True)
-    relay_thread.start()
-else:
-    print("Warning: RPi.GPIO not available, relay control disabled")
 try:
     init_kx132()
     write_reg(BUF_CLEAR, 0x00)
@@ -752,8 +764,34 @@ try:
     # ──────────────────────────────────────────────────
 
     measure_end = time.perf_counter() + MEASURE_DURATION_S
-    print(f"Collecting data for {MEASURE_DURATION_S}s...")
-    while time.perf_counter() < measure_end:
+    print(f"Collecting data — will stop 1s after motor finishes...")
+
+    # Launch motor_control.py 2 s after measurement starts (separate process)
+    # Keep a reference so we can wait for it to finish.
+    _motor_script = Path(__file__).parent / "motor_control.py"
+    _motor_proc = [None]   # list so the closure can write to it
+
+    def _launch_motor():
+        print("[motor] Starting motor_control.py...")
+        _motor_proc[0] = subprocess.Popen(["python3", str(_motor_script)])
+    threading.Timer(2.0, _launch_motor).start()
+
+    motor_done_at = None   # timestamp when motor process exits
+
+    while True:
+        # Check if motor has finished
+        proc = _motor_proc[0]
+        if proc is not None and motor_done_at is None and proc.poll() is not None:
+            motor_done_at = time.perf_counter()
+            print(f"[motor] Finished — stopping measurement in 1s...")
+
+        # Stop 1 s after motor done, or fall back to MEASURE_DURATION_S safety cap
+        if motor_done_at is not None and time.perf_counter() >= motor_done_at + 1.0:
+            break
+        if time.perf_counter() >= measure_end:
+            print(f"Safety timeout ({MEASURE_DURATION_S}s) reached.")
+            break
+
         actual_fs, z_chunk = collect_data(CHUNK_SIZE)
  
         n_got = len(z_chunk)
@@ -804,12 +842,6 @@ finally:
     except Exception as exc:
         print(f"Warning: Feature extraction failed: {exc}")
     # Hardware cleanup
-    relay_stop_event.set()
-    if GPIO_AVAILABLE:
-        if 'relay_thread' in dir():
-            relay_thread.join(timeout=1)
-        GPIO.output(RELAY_PIN, GPIO.LOW)
-        GPIO.cleanup()
     csv_file.close()
     _spi.spi_close()
     # Stop plot process
