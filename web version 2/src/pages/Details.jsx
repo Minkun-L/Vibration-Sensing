@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import { mockHistory, latestMeasurement, getThicknessStatus } from '../lib/mockData.js'
 import { fetchFeatures, fetchHistory } from '../lib/api.js'
-import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw, X } from 'lucide-react'
+import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw, X, Download } from 'lucide-react'
 
 // ── Feature row ───────────────────────────────────────────────────────────────
 function FeatureItem({ icon, label, sub, value, unit, extra }) {
@@ -147,15 +147,55 @@ function HistoryTable() {
   const useMock = histSrc === 'mock' || histSrc === 'loading'
   const rows    = useMock ? [...mockHistory].reverse() : liveHistory
 
+  function downloadCSV() {
+    const headers = ['timestamp','date','primaryFreq','spectralCentroid','rmsAcceleration',
+                     'freqRatio','secondFreq','qFactor','dampingRatio','decayTime','noMotor','note']
+    const lines = [headers.join(',')]
+    for (const r of rows) {
+      lines.push([
+        r.timestamp ?? '',
+        r.date ?? '',
+        r.primaryFreq ?? '',
+        r.spectralCentroid ?? '',
+        r.rmsAcceleration ?? '',
+        r.freqRatio ?? '',
+        r.secondFreq ?? '',
+        r.qFactor ?? '',
+        r.dampingRatio ?? '',
+        r.decayTime ?? '',
+        r.noMotor ? 'true' : 'false',
+        `"${(r.note ?? '').replace(/"/g, '""')}"`,
+      ].join(','))
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `vibration_history_${new Date().toISOString().slice(0,10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="card overflow-hidden">
       <div className="card-header">
-        <div className="card-title">Measurement History</div>
-        <div className="card-sub">
-          {histSrc === 'live' && `${liveHistory.length} recorded sessions from Pi · newest first`}
-          {histSrc === 'mock' && 'Pi offline — showing mock data · newest first'}
-          {histSrc === 'loading' && 'Loading...'}
+        <div>
+          <div className="card-title">Measurement History</div>
+          <div className="card-sub">
+            {histSrc === 'live' && `${liveHistory.length} recorded sessions from Pi · newest first`}
+            {histSrc === 'mock' && 'Pi offline — showing mock data · newest first'}
+            {histSrc === 'loading' && 'Loading...'}
+          </div>
         </div>
+        {histSrc === 'live' && (
+          <button
+            className="btn-outline"
+            onClick={downloadCSV}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', padding: '6px 12px' }}
+          >
+            <Download size={13} /> Download CSV
+          </button>
+        )}
       </div>
 
       {/* ── Per-measurement FFT panel (above table) ───────────────────────── */}

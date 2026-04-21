@@ -787,13 +787,13 @@ try:
     else:
         print(f"Collecting data — will stop 1s after motor finishes...")
 
-    # Launch motor_control.py 2 s after measurement starts (separate process)
+    # Launch motor_control2.py 2 s after measurement starts (separate process)
     # Keep a reference so we can wait for it to finish.
-    _motor_script = Path(__file__).parent / "motor_control.py"
+    _motor_script = Path(__file__).parent / "motor_control2.py"
     _motor_proc = [None]   # list so the closure can write to it
 
     def _launch_motor():
-        print("[motor] Starting motor_control.py...")
+        print("[motor] Starting motor_control2.py...")
         _motor_proc[0] = subprocess.Popen(["python3", str(_motor_script)])
     if not _NO_MOTOR:
         threading.Timer(2.0, _launch_motor).start()

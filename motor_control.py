@@ -15,13 +15,12 @@
 #   VCC   → Pi 3.3V (logic)
 #   GND   → shared ground
 #
-# Motion:
-#   Phase 1 — wait at 0 (script starts here)
-#   Phase 2 — drive to -100
-#   Phase 3 — return to 0
+# Motion (NUM_CYCLES cycles):
+#   Phase 1 — drive forward +1000 counts from current position (stall-stop)
+#   Phase 2 — return -1000 counts with exponential decay speed (stall-stop)
+#   0.5 s pause between cycles
 
 import time
-import math
 import RPi.GPIO as GPIO
 
 # ── Pin definitions ───────────────────────────────────────────
@@ -33,9 +32,8 @@ AIN2  = 24   # direction pin 2
 STBY  = 25   # standby (HIGH = enabled)
 
 # ── Motion parameters ─────────────────────────────────────────
-MOTOR_SPEED = 50     # PWM duty cycle, 0–100 (%)
-STROKE_POS  = 50   # encoder count at end of stroke
-HOME_POS    = 0      # home / return position
+MOTOR_SPEED = 50     # PWM duty cycle for forward stroke, 0–100 (%)
+STROKE_DELTA = 1000  # encoder counts to travel per stroke (relative to current position)
 TIMEOUT_S   = 30.0   # per-phase safety timeout (seconds)
 
 # ── Encoder state ─────────────────────────────────────────────
@@ -63,6 +61,7 @@ def _enc_callback(channel):
     a = GPIO.input(ENC_A)
     b = GPIO.input(ENC_B)
     curr_state = (a << 1) | b
+    # Look up delta (+1, -1, or 0) from previous→current state transition
     count += _TRANS[(_enc_state << 2) | curr_state]
     _enc_state = curr_state
 
@@ -105,40 +104,43 @@ def motor_stop():
     GPIO.output(AIN2, GPIO.LOW)
     pwm.ChangeDutyCycle(0)
 
-# Exponential decay parameters
-DECAY_RATE = 3.0   # higher = faster drop-off; 3.0 gives ~95% speed reduction over the stroke
-MIN_SPEED  = 5    # minimum duty cycle (%) — below this most motors stall
-
-def move_to(target, speed=MOTOR_SPEED, timeout=TIMEOUT_S, decay=False):
+def move_to(target, speed=MOTOR_SPEED, timeout=TIMEOUT_S, speed2=None, speed2_after=0):
     """Drive motor until count reaches target, then stop.
-    Handles both directions; stops on timeout.
-    decay=True: speed follows exponential decay from full speed to MIN_SPEED."""
+    Handles both directions. Primary stop condition: stall detection
+    (position change < 2 counts over last 70 samples). Falls back to
+    timeout if stall is never detected.
+    speed2 / speed2_after: if speed2 is set, switch to speed2 once
+    abs(counts moved from start) >= speed2_after."""
     t0 = time.perf_counter()
     last_printed = None
-    T = []
-    initial_dist = abs(target - count)
+    T = []                               # position history for stall detection
+    start_pos = count
     while True:
         pos = count
         T.append(pos)
         if pos != last_printed:
             print(f"  count = {pos}")
             last_printed = pos
-        # Compute current speed
-        if decay and initial_dist > 0:
-            fraction_done = 1.0 - abs(target - pos) / initial_dist
-            current_speed = max(MIN_SPEED, speed * math.exp(-DECAY_RATE * fraction_done))
+
+        # Two-speed profile: fast for the first speed2_after counts, then slow
+        if speed2 is not None and abs(pos - start_pos) >= speed2_after:
+            current_speed = speed2
         else:
             current_speed = speed
+
         if pos < target:
             motor_cw(current_speed)
-            if len(T) > 50 and (max(T[-70:]) - min(T[-70:]) < 2):
+            # Stall detection: if position barely moved over last 50 samples, motor has stopped
+            if len(T) > 50 and (max(T[-50:]) - min(T[-50:]) < 2):
+                print(T)
                 break
         elif pos > target:
             motor_ccw(current_speed)
-            if len(T) > 50 and (max(T[-70:]) - min(T[-70:]) < 2):
+            if len(T) > 50 and (max(T[-50:]) - min(T[-50:]) < 2):
                 break
         else:
-            break
+            break  # exactly on target
+
         if time.perf_counter() - t0 > timeout:
             print(f"Timeout! Stopped at count={count}, target={target}")
             break
@@ -154,15 +156,17 @@ try:
     for cycle in range(NUM_CYCLES):
         print(f"\nCycle {cycle + 1}/{NUM_CYCLES}")
 
-        move_to(count + 1000)
+        # Forward stroke: speed 50 until stall (hammer strike)
+        move_to(count + STROKE_DELTA)
         print(f"  Forward done: {count}")
 
-        move_to(count - 1000, decay=True)
+        # Return stroke: speed 80 for first 50 counts, then 20 for the rest
+        move_to(count - STROKE_DELTA, speed=80, speed2=20, speed2_after=50)
         print(f"  Return done:  {count}")
 
         if cycle < NUM_CYCLES - 1:
             print("  Pausing 0.5s...")
-            time.sleep(0.5)
+            time.sleep(0.5)  # brief rest before next strike
 
     motor_stop()
     print("\nAll cycles complete.")
