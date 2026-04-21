@@ -19,13 +19,14 @@ export async function fetchFeatures() {
 
 /**
  * POST to /trigger to start a measurement on the Pi immediately.
- * @param {string} note  Optional user note attached to this run.
+ * @param {string}  note     Optional user note attached to this run.
+ * @param {boolean} noMotor  If true, skip the motor impulse (background noise mode).
  */
-export async function triggerMeasurement(note = '') {
+export async function triggerMeasurement(note = '', noMotor = false) {
   const res = await fetch(`${getPiBaseUrl()}/trigger`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ note }),
+    body: JSON.stringify({ note, noMotor }),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()

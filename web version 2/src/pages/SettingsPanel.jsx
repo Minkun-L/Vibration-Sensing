@@ -29,6 +29,7 @@ export default function SettingsPanel() {
   const [piOnline, setPiOnline] = useState(null) // null=checking, true, false
   const [features, setFeatures] = useState(null)  // features received from Pi after measurement
   const [note, setNote] = useState('')
+  const [noMotor, setNoMotor] = useState(false)
   const [fftData, setFftData] = useState(null)
   const [piIpDraft, setPiIpDraft] = useState(
     () => localStorage.getItem(PI_IP_STORAGE_KEY) || DEFAULT_PI_IP
@@ -56,7 +57,7 @@ export default function SettingsPanel() {
     setStatus('measuring')
     setErrorMsg('')
     try {
-      await triggerMeasurement(note)
+      await triggerMeasurement(note, noMotor)
       // Poll /status until hasMeasurement flips or timeout (90s = 20s run + processing)
       const deadline = Date.now() + 90000
       while (Date.now() < deadline) {
@@ -230,8 +231,24 @@ export default function SettingsPanel() {
           onChange={e => setNote(e.target.value)}
           placeholder="e.g. baseline, after impact, liner replaced..."
           disabled={status === 'measuring'}
-          style={{ marginBottom: 16 }}
+          style={{ marginBottom: 12 }}
         />
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, cursor: status === 'measuring' ? 'not-allowed' : 'pointer', opacity: status === 'measuring' ? 0.5 : 1 }}>
+          <input
+            type="checkbox"
+            checked={noMotor}
+            onChange={e => setNoMotor(e.target.checked)}
+            disabled={status === 'measuring'}
+            style={{ width: 14, height: 14, accentColor: 'var(--primary)', cursor: 'inherit' }}
+          />
+          <span style={{ fontSize: '0.8rem', color: 'var(--foreground)' }}>
+            Background noise only
+          </span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--muted-foreground)' }}>
+            (skip motor impulse)
+          </span>
+        </label>
 
         {status === 'idle' && (
           <p style={{ fontSize: '0.875rem', color: 'var(--muted-foreground)', marginBottom: 16 }}>
@@ -278,7 +295,7 @@ export default function SettingsPanel() {
               : <><PlayCircle size={14} /> Start Measurement Now</>}
           </button>
           {(status === 'done' || status === 'error') && (
-            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setFftData(null); setNote('') }}>Reset</button>
+            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setFftData(null); setNote(''); setNoMotor(false) }}>Reset</button>
           )}
         </div>
 

@@ -61,13 +61,17 @@ def api_trigger():
     # Delete stale output files so hasMeasurement stays False until the new run finishes
     FEATURES_FILE.unlink(missing_ok=True)
     FFT_DATA_FILE.unlink(missing_ok=True)
+    no_motor = bool(data.get("noMotor", False))
     with _proc_lock:
         # Check if a previous process is still alive
         if _active_proc is not None and _active_proc.poll() is None:
             return jsonify({"status": "already_running"}), 409
         # Launch mk_kx132.py as a new subprocess
+        cmd = ["python3", str(MK_SCRIPT)]
+        if no_motor:
+            cmd.append("--no-motor")
         _active_proc = subprocess.Popen(
-            ["python3", str(MK_SCRIPT)],
+            cmd,
             cwd=str(_HERE),
         )
     return jsonify({"status": "triggered"})

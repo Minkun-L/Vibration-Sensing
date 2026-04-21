@@ -1,3 +1,4 @@
+import sys
 import time
 import csv
 import ctypes
@@ -7,6 +8,9 @@ import multiprocessing
 from pathlib import Path
 from datetime import datetime
 import numpy as np
+
+# When launched with --no-motor the motor impulse is skipped (background characterization mode)
+_NO_MOTOR = '--no-motor' in sys.argv
 
 try:
     import plotly.graph_objects as go
@@ -236,7 +240,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
  
     # ── Peak detection (amplitude > 1.5g) ──
     PEAK_THRESH = 0.6
-    WIN_SEC = 0.05
+    WIN_SEC = 0.1
     win_samples = int(WIN_SEC * fs)
  
     above = np.abs(z_hp) > PEAK_THRESH
@@ -479,8 +483,17 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     freq_masked = fft_freq[freq_mask]
     fft_mag_masked = avg_fft_mag[freq_mask]
 
-    # ── Feature 1: Primary Resonance Frequency (peak of PSD above HPF cutoff) ──
-    primary_freq = float(freq_masked[np.argmax(psd_masked)])
+    # ── Feature 1: Primary Resonance Frequency (peak of PSD above 100 Hz) ──
+    PRIMARY_FREQ_MIN_HZ = 100.0
+    pf_mask = freq_masked >= PRIMARY_FREQ_MIN_HZ
+    if pf_mask.any():
+        pf_idc = np.where(pf_mask)[0]
+        best_local = int(np.argmax(psd_masked[pf_mask]))
+        primary_freq = float(freq_masked[pf_idc[best_local]])
+        _primary_peak_idx = int(pf_idc[best_local])
+    else:
+        primary_freq = float(freq_masked[np.argmax(psd_masked)])
+        _primary_peak_idx = int(np.argmax(psd_masked))
 
     # ── Feature: Spectral Centroid (PSD-weighted mean frequency) ──
     psd_sum = np.sum(psd_masked)
@@ -503,7 +516,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         freq_ratio = None
     print(f"  Feature 6 — Modal Frequency Ratio (f₂/f₁): {freq_ratio} (f₂ = {second_freq} Hz)")
     # Find -3dB (half-power) crossing points around the primary frequency peak
-    peak_idx = int(np.argmax(psd_masked))
+    peak_idx = _primary_peak_idx
     half_power = psd_masked[peak_idx] / 2.0
     # Walk left from peak to find lower -3dB crossing
     left_idx = peak_idx
@@ -574,7 +587,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     fft_data_path.write_text(json.dumps({"points": fft_points}))
 
     # Build sampled time-series data for the frontend
-    MAX_TIME_POINTS = 500
+    MAX_TIME_POINTS = 5000
     ts_step = max(1, len(z_hp) // MAX_TIME_POINTS)
     ts_indices = np.arange(0, len(z_hp), ts_step)
     time_points = [
@@ -607,6 +620,7 @@ def compute_features(csv_path, sampling_rate_hz=FS):
         "dampingRatio":     features["dampingRatio"],
         "decayTime":        features["decayTime"],
         "note":             note,
+        "noMotor":          _NO_MOTOR,
         "fftPoints":        fft_points,
         "timePoints":       time_points,
         "peakWindows":      peak_windows,
@@ -764,7 +778,10 @@ try:
     # ──────────────────────────────────────────────────
 
     measure_end = time.perf_counter() + MEASURE_DURATION_S
-    print(f"Collecting data — will stop 1s after motor finishes...")
+    if _NO_MOTOR:
+        print(f"Collecting data — background noise mode (no motor impulse), running for {MEASURE_DURATION_S}s...")
+    else:
+        print(f"Collecting data — will stop 1s after motor finishes...")
 
     # Launch motor_control.py 2 s after measurement starts (separate process)
     # Keep a reference so we can wait for it to finish.
@@ -774,9 +791,16 @@ try:
     def _launch_motor():
         print("[motor] Starting motor_control.py...")
         _motor_proc[0] = subprocess.Popen(["python3", str(_motor_script)])
-    threading.Timer(2.0, _launch_motor).start()
+    if not _NO_MOTOR:
+        threading.Timer(2.0, _launch_motor).start()
 
     motor_done_at = None   # timestamp when motor process exits
+    rms_window_buf = []          # accumulates z samples for the current 2s RMS window
+    rms_window_start = time.perf_counter()
+    RMS_WINDOW_S = 2.0
+    RMS_AUTOSTOP_THRESH = 3.6    # g — sustained RMS above this triggers auto-stop
+    RMS_AUTOSTOP_DURATION_S = 5.0  # stop if RMS stays above threshold for this long
+    high_rms_since = None        # wall time when RMS first exceeded threshold
 
     while True:
         # Check if motor has finished
@@ -800,6 +824,31 @@ try:
  
         append_csv_rows(csv_writer, sample_counter, z_chunk)
         sample_counter += n_got
+
+        # Accumulate samples for 2s RMS window
+        rms_window_buf.extend(z_chunk.tolist())
+        now = time.perf_counter()
+        if now - rms_window_start >= RMS_WINDOW_S:
+            rms = float(np.sqrt(np.mean(np.array(rms_window_buf) ** 2)))
+            window_idx = int((rms_window_start - (measure_end - MEASURE_DURATION_S)) / RMS_WINDOW_S) + 1
+            print(f"[RMS] window {window_idx} ({RMS_WINDOW_S:.0f}s): {rms:.4f} g")
+            rms_window_buf = []
+            rms_window_start = now
+
+            # Auto-stop if RMS stays above threshold for too long
+            if rms > RMS_AUTOSTOP_THRESH:
+                if high_rms_since is None:
+                    high_rms_since = now
+                    print(f"[RMS] High RMS detected ({rms:.4f}g > {RMS_AUTOSTOP_THRESH}g) — "
+                          f"will auto-stop if sustained for {RMS_AUTOSTOP_DURATION_S:.0f}s.")
+                elif now - high_rms_since >= RMS_AUTOSTOP_DURATION_S:
+                    print(f"[RMS] Auto-stop triggered: RMS = {rms:.4f}g > {RMS_AUTOSTOP_THRESH}g "
+                          f"for {now - high_rms_since:.1f}s.")
+                    break
+            else:
+                if high_rms_since is not None:
+                    print(f"[RMS] RMS back below threshold ({rms:.4f}g) — auto-stop timer reset.")
+                high_rms_since = None
 
         # Send to plot process (non-blocking, drop if queue full)
         try:
