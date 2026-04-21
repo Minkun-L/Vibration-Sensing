@@ -425,22 +425,26 @@ def compute_features(csv_path, sampling_rate_hz=FS):
     z_hp = sosfilt(sos, z_g)
 
     # ── Peak window detection (0.05 s per window) ──
+    # Skipped in no-motor (background noise) mode — use the full signal instead.
     PEAK_THRESH = 0.6
     WIN_SEC = 0.05
     win_samples = int(WIN_SEC * fs)
     skip_samples = int(2.0 * fs)
 
-    above = np.abs(z_hp) > PEAK_THRESH
-    edges = np.diff(above.astype(np.int8))
-    peak_starts = np.where(edges == 1)[0] + 1
-    peak_starts = peak_starts[peak_starts >= skip_samples]
-    if len(peak_starts) > 1:
-        merged = [peak_starts[0]]
-        for ps in peak_starts[1:]:
-            if ps - merged[-1] >= win_samples:
-                merged.append(ps)
-        peak_starts = np.array(merged)
-    peak_starts = peak_starts[peak_starts + win_samples <= len(z_hp)]
+    if _NO_MOTOR:
+        peak_starts = np.array([], dtype=np.intp)
+    else:
+        above = np.abs(z_hp) > PEAK_THRESH
+        edges = np.diff(above.astype(np.int8))
+        peak_starts = np.where(edges == 1)[0] + 1
+        peak_starts = peak_starts[peak_starts >= skip_samples]
+        if len(peak_starts) > 1:
+            merged = [peak_starts[0]]
+            for ps in peak_starts[1:]:
+                if ps - merged[-1] >= win_samples:
+                    merged.append(ps)
+            peak_starts = np.array(merged)
+        peak_starts = peak_starts[peak_starts + win_samples <= len(z_hp)]
 
     # ── Collect windowed segments (used for both PSD and RMS) ──
     if len(peak_starts) > 0:
