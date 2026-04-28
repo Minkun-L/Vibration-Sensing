@@ -85,36 +85,34 @@ int spi_read_reg(uint8_t reg, uint8_t *buf, uint16_t length)
     return 0;
 }
 
-/* ── FIFO per-sample read: 6 × 2-byte SPI transactions per sample ── */
-/*    KX132 BUF_READ auto-increments address in multi-byte reads,     */
-/*    so each FIFO byte must be a separate 2-byte SPI transaction:    */
-/*    [0xE3, 0x00] → rx[1] = one FIFO byte.                          */
-/*    We batch 6 transfers per ioctl using cs_change flag.            */
+/* ── FIFO per-sample read: one SPI_IOC_MESSAGE(1) per FIFO byte ──── */
+/*    KX132 BUF_READ auto-increments when CS is held low across       */
+/*    multiple bytes (reads ADP_CNTL registers instead of FIFO data). */
+/*    Each FIFO byte therefore requires its own separated CS cycle:   */
+/*    one ioctl(SPI_IOC_MESSAGE(1)) per byte guarantees CS toggles.   */
+/*    Using cs_change=1 in a batched SPI_IOC_MESSAGE(6) is NOT        */
+/*    reliable on spi-bcm2835 — under load CS may not actually toggle,*/
+/*    causing auto-increment and returning garbage register data.      */
 
 int spi_fifo_read_samples(uint16_t n_samples, uint8_t *out_buf)
 {
-    uint8_t tx[6][2];
-    uint8_t rx[6][2];
-    struct spi_ioc_transfer tr[6];
+    uint8_t tx[2] = { 0x63 | 0x80, 0x00 };  /* BUF_READ with read bit */
+    uint8_t rx[2];
+    struct spi_ioc_transfer tr;
 
-    /* Pre-fill the tx buffers and zero the transfer structs */
-    memset(tr, 0, sizeof(tr));
-    for (int j = 0; j < 6; j++) {
-        tx[j][0] = 0x63 | 0x80;   /* BUF_READ command */
-        tx[j][1] = 0x00;
-        tr[j].tx_buf        = (unsigned long)tx[j];
-        tr[j].rx_buf        = (unsigned long)rx[j];
-        tr[j].len           = 2;
-        tr[j].cs_change     = 1;  /* deassert CS after each transfer */
-    }
-    /* Last transfer: cs_change=0 → CS deasserts normally at end */
-    tr[5].cs_change = 0;
+    memset(&tr, 0, sizeof(tr));
+    tr.tx_buf   = (unsigned long)tx;
+    tr.rx_buf   = (unsigned long)rx;
+    tr.len      = 2;
+    tr.cs_change = 0;  /* normal: CS deasserts after each 2-byte transfer */
 
     for (uint16_t i = 0; i < n_samples; i++) {
-        int ret = ioctl(spi_fd, SPI_IOC_MESSAGE(6), tr);
-        if (ret < 0) { perror("fifo sample read"); return ret; }
         for (int j = 0; j < 6; j++) {
-            out_buf[i * 6 + j] = rx[j][1];
+            if (ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0) {
+                perror("fifo sample read");
+                return -1;
+            }
+            out_buf[i * 6 + j] = rx[1];
         }
     }
     return 0;

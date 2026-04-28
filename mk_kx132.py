@@ -1,22 +1,21 @@
+import sys
 import time
 import csv
 import ctypes
+import subprocess
 import threading
 import multiprocessing
 from pathlib import Path
 from datetime import datetime
 import numpy as np
 
+# When launched with --no-motor the motor impulse is skipped (background characterization mode)
+_NO_MOTOR = '--no-motor' in sys.argv
+
 try:
     import plotly.graph_objects as go
 except ImportError as exc:
     raise ImportError("plotly is required. Install with: pip install plotly") from exc
-
-try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
 
 # =========================
 # SPI setup (C library via ctypes)
@@ -68,9 +67,8 @@ CHUNK_SIZE = 40        # XYZ samples per read (FIFO max=86 in 16-bit mode)
 FFT_AVG_COUNT = 5      # moving average count for FFT magnitude
 # HP_CUTOFF_HZ = 10.0    # high-pass cutoff for magnitude signal (disabled)
 KX132_G_PER_LSB = 0.000244  # +/-8g mode scale factor
-RELAY_PIN = 27
-RELAY_ON_S = 0.05
-RELAY_OFF_S = 1.95
+HPF_CUTOFF_HZ = 10.0      # high-pass filter cutoff (Hz) — used in export and feature extraction
+MEASURE_DURATION_S = 16   # how long to collect data per run (seconds)
 # =========================
 # SPI helpers
 # =========================
@@ -124,8 +122,14 @@ def get_fifo_sample_count():
     lo = read_reg(BUF_STATUS_1)[0]
     status2 = read_reg(BUF_STATUS_2)[0]
     if status2 & 0x80:
-        print("FIFO OVERFLOW! resetting...")
+        who = read_reg(WHO_AM_I)[0]
+        if who != 0x3D:
+            print(f"WARNING: BUF_STATUS_2=0x{status2:02X} but WHO_AM_I=0x{who:02X} (expected 0x3D) — "
+                  f"likely floating MISO (disconnected pin). CHECK WIRING.")
+        else:
+            print("FIFO OVERFLOW! resetting...")
         write_reg(BUF_CLEAR, 0x00)
+        return 0  # return 0 so collect_data waits for fresh data after the clear
     hi = status2 & 0x07  # bits 2:0
     raw_count = (hi << 8) | lo
     # SMP_LEV counts bytes in FIFO; divide by 6 for XYZ sample sets (16-bit mode)
@@ -167,8 +171,37 @@ def collect_data(num_samples):
     # Vectorized decode: reshape to (n_to_read, 6), extract Z only
     raw = raw.reshape(n_to_read, 6)
     z_raw = (raw[:, 5].astype(np.int16) << 8) | raw[:, 4]
- 
-    return FS, z_raw * KX132_G_PER_LSB
+    z_g = z_raw * KX132_G_PER_LSB
+
+    # Sanity clamp: KX132 is configured for ±8 g; anything beyond ±9 g is
+    # a corrupt read (usually from a cs_change / auto-increment misfire or
+    # loose SPI wiring causing a momentary open circuit).
+    MAX_VALID_G = 9.0
+    corrupt = np.abs(z_g) > MAX_VALID_G
+    if corrupt.any():
+        n_corrupt = int(corrupt.sum())
+        raw_vals = z_raw[corrupt].tolist()
+        # Diagnose the pattern: all-0xFF → MISO floating high (wire open)
+        #                       all-0x00 → MISO floating low  (wire open)
+        #                       specific values → register auto-increment
+        raw_bytes_corrupt = raw[corrupt]
+        all_ff = bool(np.all(raw_bytes_corrupt == 0xFF))
+        all_00 = bool(np.all(raw_bytes_corrupt == 0x00))
+        if all_ff or all_00:
+            print(f"WARNING: {n_corrupt} corrupt sample(s) — MISO line appears OPEN CIRCUIT "
+                  f"({'0xFF' if all_ff else '0x00'} pattern). CHECK WIRING.")
+        else:
+            # Verify WHO_AM_I to confirm SPI bus is still alive
+            who = read_reg(WHO_AM_I)[0]
+            if who != 0x3D:
+                print(f"WARNING: {n_corrupt} corrupt sample(s) AND WHO_AM_I={hex(who)} "
+                      f"(expected 0x3D) — SPI BUS FAULT. CHECK WIRING.")
+            else:
+                print(f"Warning: {n_corrupt} corrupt sample(s) clamped (|z| > {MAX_VALID_G}g) "
+                      f"— raw Z bytes: {raw_vals[:4]}. SPI bus OK (WHO_AM_I=0x3D).")
+        z_g[corrupt] = 0.0
+
+    return FS, z_g
  
  
 CSV_WRITE_THRESHOLD = 1000
@@ -186,6 +219,7 @@ def append_csv_rows(csv_writer, sample_start_idx, z_data):
 def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path=None):
     from plotly.subplots import make_subplots
     from scipy.signal import butter, sosfilt, find_peaks
+    import re
  
     csv_file_path = Path(csv_path)
     if not csv_file_path.exists():
@@ -205,13 +239,13 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     fs = float(sampling_rate_hz)
     time_s = np.arange(len(z_g), dtype=np.float64) / fs
  
-    # ── 20 Hz high-pass filter ──
-    sos = butter(4, 20.0, btype='high', fs=fs, output='sos')
+    # ── High-pass filter ──
+    sos = butter(4, HPF_CUTOFF_HZ, btype='high', fs=fs, output='sos')
     z_hp = sosfilt(sos, z_g)
  
     # ── Peak detection (amplitude > 1.5g) ──
     PEAK_THRESH = 0.6
-    WIN_SEC = 0.5
+    WIN_SEC = 0.05
     win_samples = int(WIN_SEC * fs)
  
     above = np.abs(z_hp) > PEAK_THRESH
@@ -267,7 +301,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     avg_psd_db = 10 * np.log10(np.maximum(avg_psd, 1e-20))
  
     # Trim sub-20Hz bins
-    freq_mask = fft_freq_win >= 20.0
+    freq_mask = fft_freq_win >= HPF_CUTOFF_HZ
     fft_freq_plot = fft_freq_win[freq_mask]
     fft_mag_plot = avg_fft_mag[freq_mask]
     psd_db_plot = avg_psd_db[freq_mask]
@@ -276,7 +310,7 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     fig = make_subplots(
         rows=3, cols=1,
         subplot_titles=(
-            f"Z-Axis Over Time (20Hz HPF, {len(peak_starts)} peaks detected)",
+            f"Z-Axis Over Time ({HPF_CUTOFF_HZ:.0f}Hz HPF, {len(peak_starts)} peaks detected)",
             f"FFT Magnitude (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
             f"PSD (avg of {len(peak_starts)} × {WIN_SEC}s windows)",
         ),
@@ -370,11 +404,242 @@ def export_magnitude_plotly_html(csv_path, sampling_rate_hz=FS, output_html_path
     )
  
     if output_html_path is None:
-        output_html_path = csv_file_path.with_name(f"{csv_file_path.stem}_magnitude.html")
+        short_name = re.sub(r'^kx132_\d{4}', '', csv_file_path.stem).lstrip("_")
+        output_html_path = csv_file_path.with_name(short_name + ".html")
  
     output_html_path = Path(output_html_path)
     fig.write_html(str(output_html_path), include_plotlyjs="cdn")
     return str(output_html_path)
+
+
+# =========================
+# Feature extraction
+# =========================
+def compute_features(csv_path, sampling_rate_hz=FS):
+    from scipy.signal import butter, sosfilt, find_peaks
+
+    csv_file_path = Path(csv_path)
+    data = np.genfromtxt(csv_file_path, delimiter=",", names=True)
+    data = np.atleast_1d(data)
+    z_g = np.asarray(data["z_g"], dtype=np.float64)
+
+    fs = float(sampling_rate_hz)
+
+    # ── High-pass filter ──
+    sos = butter(4, HPF_CUTOFF_HZ, btype='high', fs=fs, output='sos')
+    z_hp = sosfilt(sos, z_g)
+
+    # ── Peak window detection (0.05 s per window) ──
+    # Skipped in no-motor (background noise) mode — use the full signal instead.
+    PEAK_THRESH = 0.6
+    WIN_SEC = 0.05
+    win_samples = int(WIN_SEC * fs)
+    skip_samples = int(2.0 * fs)
+
+    if _NO_MOTOR:
+        peak_starts = np.array([], dtype=np.intp)
+    else:
+        above = np.abs(z_hp) > PEAK_THRESH
+        edges = np.diff(above.astype(np.int8))
+        peak_starts = np.where(edges == 1)[0] + 1
+        peak_starts = peak_starts[peak_starts >= skip_samples]
+        if len(peak_starts) > 1:
+            merged = [peak_starts[0]]
+            for ps in peak_starts[1:]:
+                if ps - merged[-1] >= win_samples:
+                    merged.append(ps)
+            peak_starts = np.array(merged)
+        peak_starts = peak_starts[peak_starts + win_samples <= len(z_hp)]
+
+    # ── Collect windowed segments (used for both PSD and RMS) ──
+    if len(peak_starts) > 0:
+        windows = [z_hp[ps:ps + win_samples] for ps in peak_starts]
+    else:
+        # Fallback: treat entire signal as one window
+        windows = [z_hp]
+
+    # ── Feature 5: RMS of Acceleration (averaged over windows) ──
+    rms = float(np.mean([np.sqrt(np.mean(w ** 2)) for w in windows]))
+
+    # ── Averaged PSD over peak windows ──
+    if len(peak_starts) > 0:
+        fft_freq = np.fft.rfftfreq(win_samples, d=1.0 / fs)
+        avg_psd = np.zeros(len(fft_freq))
+        avg_fft_mag = np.zeros(len(fft_freq))
+        hann = np.hanning(win_samples)
+        hann_sum = np.sum(hann)
+        hann_ss = np.sum(hann ** 2)
+        for w in windows:
+            fv = np.fft.rfft(w * hann)
+            avg_fft_mag += 2.0 * np.abs(fv) / hann_sum
+            p = np.abs(fv) ** 2 / (hann_ss * fs)
+            p[1:-1] *= 2
+            avg_psd += p
+        avg_fft_mag /= len(windows)
+        avg_psd /= len(windows)
+    else:
+        n_full = len(z_hp)
+        hann = np.hanning(n_full)
+        fft_freq = np.fft.rfftfreq(n_full, d=1.0 / fs)
+        fv = np.fft.rfft(z_hp * hann)
+        avg_fft_mag = 2.0 * np.abs(fv) / np.sum(hann)
+        avg_psd = np.abs(fv) ** 2 / (np.sum(hann ** 2) * fs)
+        avg_psd[1:-1] *= 2
+
+    # Restrict all spectral features to frequencies above the HPF cutoff
+    freq_mask = fft_freq >= HPF_CUTOFF_HZ
+    psd_masked = avg_psd[freq_mask]
+    freq_masked = fft_freq[freq_mask]
+    fft_mag_masked = avg_fft_mag[freq_mask]
+
+    # ── Feature 1: Primary Resonance Frequency (peak of PSD above 100 Hz) ──
+    PRIMARY_FREQ_MIN_HZ = 100.0
+    pf_mask = freq_masked >= PRIMARY_FREQ_MIN_HZ
+    if pf_mask.any():
+        pf_idc = np.where(pf_mask)[0]
+        best_local = int(np.argmax(psd_masked[pf_mask]))
+        primary_freq = float(freq_masked[pf_idc[best_local]])
+        _primary_peak_idx = int(pf_idc[best_local])
+    else:
+        primary_freq = float(freq_masked[np.argmax(psd_masked)])
+        _primary_peak_idx = int(np.argmax(psd_masked))
+
+    # ── Feature: Spectral Centroid (PSD-weighted mean frequency) ──
+    psd_sum = np.sum(psd_masked)
+    if psd_sum > 0:
+        spectral_centroid = float(np.sum(freq_masked * psd_masked) / psd_sum)
+    else:
+        spectral_centroid = 0.0
+
+    # ── Feature: Modal Frequency Ratio (f₂ / f₁) ──
+    # Find the second distinct PSD peak, requiring at least max(50 Hz, 30% of f₁) separation
+    freq_resolution = float(freq_masked[1] - freq_masked[0]) if len(freq_masked) > 1 else 1.0
+    min_sep_bins = max(2, int(max(50.0, 0.3 * primary_freq) / freq_resolution))
+    candidate_peaks, _ = find_peaks(psd_masked, distance=min_sep_bins)
+    if len(candidate_peaks) >= 2:
+        sorted_peaks = sorted(candidate_peaks, key=lambda i: psd_masked[i], reverse=True)
+        second_freq = float(freq_masked[sorted_peaks[1]])
+        freq_ratio = round(second_freq / primary_freq, 2) if primary_freq > 0 else None
+    else:
+        second_freq = None
+        freq_ratio = None
+    print(f"  Feature 6 — Modal Frequency Ratio (f₂/f₁): {freq_ratio} (f₂ = {second_freq} Hz)")
+    # Find -3dB (half-power) crossing points around the primary frequency peak
+    peak_idx = _primary_peak_idx
+    half_power = psd_masked[peak_idx] / 2.0
+    # Walk left from peak to find lower -3dB crossing
+    left_idx = peak_idx
+    while left_idx > 0 and psd_masked[left_idx] > half_power:
+        left_idx -= 1
+    # Interpolate for sub-bin accuracy
+    if left_idx < peak_idx and psd_masked[left_idx + 1] != psd_masked[left_idx]:
+        frac = (half_power - psd_masked[left_idx]) / (psd_masked[left_idx + 1] - psd_masked[left_idx])
+        f_lower = float(freq_masked[left_idx] + frac * (freq_masked[left_idx + 1] - freq_masked[left_idx]))
+    else:
+        f_lower = float(freq_masked[left_idx])
+    # Walk right from peak to find upper -3dB crossing
+    right_idx = peak_idx
+    while right_idx < len(psd_masked) - 1 and psd_masked[right_idx] > half_power:
+        right_idx += 1
+    if right_idx > peak_idx and psd_masked[right_idx] != psd_masked[right_idx - 1]:
+        frac = (psd_masked[right_idx - 1] - half_power) / (psd_masked[right_idx - 1] - psd_masked[right_idx])
+        f_upper = float(freq_masked[right_idx - 1] + frac * (freq_masked[right_idx] - freq_masked[right_idx - 1]))
+    else:
+        f_upper = float(freq_masked[right_idx])
+    bandwidth = f_upper - f_lower
+    if bandwidth > 0 and primary_freq > 0:
+        q_factor      = primary_freq / bandwidth
+        damping_ratio = 1.0 / (2.0 * q_factor)
+        decay_time_ms = (q_factor / (np.pi * primary_freq)) * 1000.0  # ms
+    else:
+        q_factor      = 0.0
+        damping_ratio = 0.0
+        decay_time_ms = 0.0
+    print(f"  Feature 2 — Q Factor                    : {q_factor:.1f}")
+    print(f"  Feature 3 — Damping Ratio               : {damping_ratio:.4f}")
+    print(f"  Feature 3 — Decay Time                  : {decay_time_ms:.1f} ms")
+    print("===========================\n")
+
+    print("\n=== EXTRACTED FEATURES ===")
+    print(f"  Feature 1 — Primary Resonance Frequency : {primary_freq:.1f} Hz")
+    print(f"  Feature 4 — Spectral Centroid           : {spectral_centroid:.1f} Hz")
+    print(f"  Feature 5 — RMS of Acceleration         : {rms:.4f} g")
+
+    # Write results to features.json so server.py can serve them to the frontend
+    import json
+    now = datetime.now()
+    features = {
+        "primaryFreq":      round(primary_freq, 1),
+        "rmsAcceleration":  round(rms, 4),
+        "spectralCentroid": round(spectral_centroid, 1),
+        "freqRatio":        freq_ratio,
+        "secondFreq":       round(second_freq, 1) if second_freq is not None else None,
+        "qFactor":          round(q_factor, 1),
+        "dampingRatio":     round(damping_ratio, 4),
+        "decayTime":        round(decay_time_ms, 1),
+        "timestamp":        now.isoformat(),
+    }
+    features_path = Path(__file__).parent / "features.json"
+    features_path.write_text(json.dumps(features, indent=2))
+
+    # Write FFT chart data for the frontend
+    MAX_CHART_POINTS = 400
+    freqs_list = freq_masked.tolist()
+    mag_list = fft_mag_masked.tolist()
+    if len(freqs_list) > MAX_CHART_POINTS:
+        step = max(1, len(freqs_list) // MAX_CHART_POINTS)
+        freqs_list = freqs_list[::step]
+        mag_list = mag_list[::step]
+    fft_points = [{"freq": round(float(f), 1), "mag": round(float(m), 6)}
+                  for f, m in zip(freqs_list, mag_list)]
+    fft_data_path = Path(__file__).parent / "fft_data.json"
+    fft_data_path.write_text(json.dumps({"points": fft_points}))
+
+    # Build sampled time-series data for the frontend
+    MAX_TIME_POINTS = 5000
+    ts_step = max(1, len(z_hp) // MAX_TIME_POINTS)
+    ts_indices = np.arange(0, len(z_hp), ts_step)
+    time_points = [
+        {"t": round(float(i / fs), 4), "z": round(float(z_hp[i]), 5)}
+        for i in ts_indices
+    ]
+    peak_windows = [
+        {"tStart": round(float(ps / fs), 4), "tEnd": round(float((ps + win_samples) / fs), 4)}
+        for ps in peak_starts
+    ]
+
+    # Append to history.json for the frontend history table
+    history_path = Path(__file__).parent / "history.json"
+    pending_note_path = Path(__file__).parent / "pending_note.json"
+    try:
+        note = json.loads(pending_note_path.read_text()).get("note", "") if pending_note_path.exists() else ""
+        pending_note_path.unlink(missing_ok=True)   # consume it
+    except (json.JSONDecodeError, OSError):
+        note = ""
+    record = {
+        "id":               f"m{now.strftime('%Y%m%d%H%M%S')}",
+        "timestamp":        features["timestamp"],
+        "date":             now.strftime("%b %-d"),
+        "primaryFreq":      features["primaryFreq"],
+        "spectralCentroid": features["spectralCentroid"],
+        "rmsAcceleration":  features["rmsAcceleration"],
+        "freqRatio":        features["freqRatio"],
+        "secondFreq":       features["secondFreq"],
+        "qFactor":          features["qFactor"],
+        "dampingRatio":     features["dampingRatio"],
+        "decayTime":        features["decayTime"],
+        "note":             note,
+        "noMotor":          _NO_MOTOR,
+        "fftPoints":        fft_points,
+        "timePoints":       time_points,
+        "peakWindows":      peak_windows,
+    }
+    try:
+        history = json.loads(history_path.read_text()) if history_path.exists() else []
+    except (json.JSONDecodeError, OSError):
+        history = []
+    history.append(record)
+    history_path.write_text(json.dumps(history, indent=2))
  
 
 # =========================
@@ -384,12 +649,24 @@ def plot_process_func(plot_queue, fs, n_display):
     import os
     os.environ['QT_LOGGING_RULES'] = '*.debug=false;qt.qpa.*=false'
     import matplotlib
-    matplotlib.use('TkAgg')  # avoid Qt/Wayland issues
-    import matplotlib.pyplot as plt
+    # Try TkAgg first; fall back to Agg (non-interactive) on headless systems
+    try:
+        matplotlib.use('TkAgg')
+        import matplotlib.pyplot as plt
+        plt.ion()
+        fig, ax = plt.subplots(1, 1)
+    except (ImportError, Exception):
+        print("Warning: No display available, live plot disabled")
+        # Drain queue so main process doesn't block
+        while True:
+            try:
+                item = plot_queue.get(timeout=2.0)
+                if item is None:
+                    return
+            except Exception:
+                continue
+        return
     import numpy as np
-
-    plt.ion()
-    fig, ax = plt.subplots(1, 1)
     t = np.arange(n_display) / fs
     z_buf = np.zeros(n_display, dtype=np.float64)
     line_z, = ax.plot(t, z_buf, label="Z")
@@ -436,39 +713,20 @@ csv_writer.writerow(["sample", "z_g"])
 sample_counter = 0
 diag_counter = 0
 plotly_export_enabled = True
-plotly_export_path = Path(csv_filename).with_name(f"{Path(csv_filename).stem}_magnitude.html")
+plotly_export_path = Path(csv_filename).with_name(script_start.strftime("%m%d_%H%M%S.html"))
 print(f"Logging CSV: {csv_filename}")
 
 # Start live plot in separate process
 plot_queue = multiprocessing.Queue(maxsize=50)
 plot_proc = multiprocessing.Process(target=plot_process_func, args=(plot_queue, FS, N), daemon=True)
 plot_proc.start()
+
+# Pre-import scipy so it's cached before Ctrl+C triggers export
+try:
+    from scipy.signal import butter, sosfilt, find_peaks  # noqa: F401
+except ImportError:
+    pass
  
-relay_stop_event = threading.Event()
-
-def relay_thread_func():
-    state_on = False
-    last_toggle = time.perf_counter()
-    GPIO.output(RELAY_PIN, GPIO.LOW)
-    while not relay_stop_event.is_set():
-        now = time.perf_counter()
-        period = RELAY_ON_S if state_on else RELAY_OFF_S
-        if now - last_toggle >= period:
-            state_on = not state_on
-            GPIO.output(RELAY_PIN, GPIO.HIGH if state_on else GPIO.LOW)
-            last_toggle = now
-        relay_stop_event.wait(timeout=0.001)
-    GPIO.output(RELAY_PIN, GPIO.LOW)
-
-if GPIO_AVAILABLE:
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(RELAY_PIN, GPIO.OUT)
-    GPIO.output(RELAY_PIN, GPIO.LOW)
-    print(GPIO.gpio_function(27))
-    relay_thread = threading.Thread(target=relay_thread_func, daemon=True)
-    relay_thread.start()
-else:
-    print("Warning: RPi.GPIO not available, relay control disabled")
 try:
     init_kx132()
     write_reg(BUF_CLEAR, 0x00)
@@ -527,8 +785,46 @@ try:
     print("D) C per-sample 1 sample:    ", list(test_d[:6]))
     print("=== END DIAGNOSTIC ===\n")
     # ──────────────────────────────────────────────────
- 
+
+    measure_end = time.perf_counter() + MEASURE_DURATION_S
+    if _NO_MOTOR:
+        print(f"Collecting data — background noise mode (no motor impulse), running for {MEASURE_DURATION_S}s...")
+    else:
+        print(f"Collecting data — will stop 1s after motor finishes...")
+
+    # Launch motor_control2.py 2 s after measurement starts (separate process)
+    # Keep a reference so we can wait for it to finish.
+    _motor_script = Path(__file__).parent / "motor_control2.py"
+    _motor_proc = [None]   # list so the closure can write to it
+
+    def _launch_motor():
+        print("[motor] Starting motor_control2.py...")
+        _motor_proc[0] = subprocess.Popen(["python3", str(_motor_script)])
+    if not _NO_MOTOR:
+        threading.Timer(2.0, _launch_motor).start()
+
+    motor_done_at = None   # timestamp when motor process exits
+    rms_window_buf = []          # accumulates z samples for the current 2s RMS window
+    rms_window_start = time.perf_counter()
+    RMS_WINDOW_S = 2.0
+    RMS_AUTOSTOP_THRESH = 3.6    # g — sustained RMS above this triggers auto-stop
+    RMS_AUTOSTOP_DURATION_S = 5.0  # stop if RMS stays above threshold for this long
+    high_rms_since = None        # wall time when RMS first exceeded threshold
+
     while True:
+        # Check if motor has finished
+        proc = _motor_proc[0]
+        if proc is not None and motor_done_at is None and proc.poll() is not None:
+            motor_done_at = time.perf_counter()
+            print(f"[motor] Finished — stopping measurement in 1s...")
+
+        # Stop 1 s after motor done, or fall back to MEASURE_DURATION_S safety cap
+        if motor_done_at is not None and time.perf_counter() >= motor_done_at + 1.0:
+            break
+        if time.perf_counter() >= measure_end:
+            print(f"Safety timeout ({MEASURE_DURATION_S}s) reached.")
+            break
+
         actual_fs, z_chunk = collect_data(CHUNK_SIZE)
  
         n_got = len(z_chunk)
@@ -537,6 +833,31 @@ try:
  
         append_csv_rows(csv_writer, sample_counter, z_chunk)
         sample_counter += n_got
+
+        # Accumulate samples for 2s RMS window
+        rms_window_buf.extend(z_chunk.tolist())
+        now = time.perf_counter()
+        if now - rms_window_start >= RMS_WINDOW_S:
+            rms = float(np.sqrt(np.mean(np.array(rms_window_buf) ** 2)))
+            window_idx = int((rms_window_start - (measure_end - MEASURE_DURATION_S)) / RMS_WINDOW_S) + 1
+            print(f"[RMS] window {window_idx} ({RMS_WINDOW_S:.0f}s): {rms:.4f} g")
+            rms_window_buf = []
+            rms_window_start = now
+
+            # Auto-stop if RMS stays above threshold for too long
+            if rms > RMS_AUTOSTOP_THRESH:
+                if high_rms_since is None:
+                    high_rms_since = now
+                    print(f"[RMS] High RMS detected ({rms:.4f}g > {RMS_AUTOSTOP_THRESH}g) — "
+                          f"will auto-stop if sustained for {RMS_AUTOSTOP_DURATION_S:.0f}s.")
+                elif now - high_rms_since >= RMS_AUTOSTOP_DURATION_S:
+                    print(f"[RMS] Auto-stop triggered: RMS = {rms:.4f}g > {RMS_AUTOSTOP_THRESH}g "
+                          f"for {now - high_rms_since:.1f}s.")
+                    break
+            else:
+                if high_rms_since is not None:
+                    print(f"[RMS] RMS back below threshold ({rms:.4f}g) — auto-stop timer reset.")
+                high_rms_since = None
 
         # Send to plot process (non-blocking, drop if queue full)
         try:
@@ -551,13 +872,18 @@ try:
  
         if diag_counter % 100 == 0:
             print(f"Actual sampling rate: {actual_fs:.1f} Hz")
-            
+
+    print(f"\nDone — {sample_counter} samples collected.")
+
 except KeyboardInterrupt:
-    print("\nStopping...")
+    print("\nStopping early (KeyboardInterrupt)...")
+finally:
+    # Flush CSV
     if csv_buffer:
         csv_writer.writerows(csv_buffer)
         csv_buffer.clear()
     csv_file.flush()
+    # Export plotly HTML
     if plotly_export_enabled:
         try:
             export_magnitude_plotly_html(
@@ -568,13 +894,12 @@ except KeyboardInterrupt:
             print(f"Plotly HTML exported: {plotly_export_path}")
         except Exception as exc:
             print(f"Warning: HTML export failed: {exc}")
-finally:
-    relay_stop_event.set()
-    if GPIO_AVAILABLE:
-        if 'relay_thread' in dir():
-            relay_thread.join(timeout=1)
-        GPIO.output(RELAY_PIN, GPIO.LOW)
-        GPIO.cleanup()
+    # Extract features and push to Flask API
+    try:
+        compute_features(csv_path=csv_filename, sampling_rate_hz=FS)
+    except Exception as exc:
+        print(f"Warning: Feature extraction failed: {exc}")
+    # Hardware cleanup
     csv_file.close()
     _spi.spi_close()
     # Stop plot process
