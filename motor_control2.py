@@ -44,11 +44,11 @@ RELEASE_COUNT       = 55     # encoder count at which forward drive is cut
                              # with residual momentum (< actual ground-contact count)
 
 # State 3 — Release / Impact
-COAST_DEADTIME_MS   = 120     # ms to wait in coast before retracting
+COAST_DEADTIME_MS   = 66     # ms to wait in coast before retracting
                              # long enough for hammer to hit and start bouncing back
 
 # State 4 — Retract
-RETRACT_SPEED       = 35    # PWM % for fast retract
+RETRACT_SPEED       = 66    # PWM % for fast retract
 RETRACT_SLOW_AT     = 50   # switch to slow speed when count <= this (near home)
 RETRACT_SLOW_SPEED  = 0     # PWM % for final slow settle onto wall
 

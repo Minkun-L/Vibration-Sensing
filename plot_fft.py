@@ -78,3 +78,22 @@ out_path = os.path.join("web version 2", "src", "lib", "groupAverages.json")
 with open(out_path, "w") as f:
     json.dump(group_averages, f)
 print(f"Group averages saved to {out_path}")
+
+# ── Export individual samples for KNN ──────────────────────────────────────
+knn_samples = []
+for _, row in df.iterrows():
+    group_key, _ = get_group(str(row["note"]))
+    if group_key == "other":
+        continue
+    knn_samples.append({
+        "group": group_key,
+        "points": [
+            {"freq": int(f), "mag": round(float(row[f]), 6)}
+            for f in freq_cols
+        ]
+    })
+
+knn_path = os.path.join("web version 2", "src", "lib", "knnSamples.json")
+with open(knn_path, "w") as f:
+    json.dump(knn_samples, f)
+print(f"KNN samples saved to {knn_path} ({len(knn_samples)} samples total)")

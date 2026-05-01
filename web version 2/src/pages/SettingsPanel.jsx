@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import { useTheme } from '../contexts/ThemeContext.jsx'
 import { triggerMeasurement, fetchStatus, fetchFeatures, fetchFftData, DEFAULT_PI_IP, PI_IP_STORAGE_KEY } from '../lib/api.js'
 import groupAverages from '../lib/groupAverages.json'
+import knnSamples from '../lib/knnSamples.json'
 
 // ── Thickness prediction helpers ──────────────────────────────────────────────
 const GROUP_LABELS = {
@@ -24,23 +25,72 @@ function cosineSim(v1, v2) {
   return n1 && n2 ? dot / (Math.sqrt(n1) * Math.sqrt(n2)) : 0
 }
 
+const FREQ_MIN = 80   // Hz — exclude low-frequency structural noise
+const FREQ_MAX = 2700 // Hz — exclude high-frequency low-SNR region
+const EXCLUDED_GROUPS = new Set(['0', '1', '3']) // groups excluded from prediction
+
 function predictThickness(fftPoints) {
   if (!fftPoints?.length) return null
-  // Build measured map: rounded-integer freq → mag
+  // Build measured map: rounded-integer freq → mag (only within analysis band)
   const measured = {}
   for (const { freq, mag } of fftPoints) {
-    measured[Math.round(freq)] = mag
+    const f = Math.round(freq)
+    if (f >= FREQ_MIN && f <= FREQ_MAX) measured[f] = mag
   }
-  let best = null, bestSim = -Infinity
+  const results = []
   for (const [groupKey, avgPoints] of Object.entries(groupAverages)) {
-    const common = avgPoints.filter(p => measured[p.freq] != null)
+    if (EXCLUDED_GROUPS.has(groupKey)) continue
+    const common = avgPoints.filter(p => p.freq >= FREQ_MIN && p.freq <= FREQ_MAX && measured[p.freq] != null)
     if (common.length === 0) continue
     const v1 = common.map(p => measured[p.freq])
     const v2 = common.map(p => p.mag)
-    const sim = cosineSim(v1, v2)
-    if (sim > bestSim) { bestSim = sim; best = groupKey }
+    results.push({ groupKey, sim: cosineSim(v1, v2) })
   }
-  return best ? { group: best, label: GROUP_LABELS[best] ?? best, similarity: bestSim } : null
+  if (results.length === 0) return null
+  results.sort((a, b) => b.sim - a.sim)
+  const best = results[0]
+  const margin = results.length > 1 ? best.sim - results[1].sim : 1
+  if (margin < 0.02) {
+    return { group: null, label: 'Uncertain', bestGuess: GROUP_LABELS[best.groupKey] ?? best.groupKey, similarity: best.sim, uncertain: true }
+  }
+  return { group: best.groupKey, label: GROUP_LABELS[best.groupKey] ?? best.groupKey, similarity: best.sim, uncertain: false }
+}
+
+// ── k-NN classifier (k=3, cosine distance, same frequency band) ───────────────
+const KNN_K = 1
+
+function predictKNN(fftPoints) {
+  if (!fftPoints?.length) return null
+  const measured = {}
+  for (const { freq, mag } of fftPoints) {
+    const f = Math.round(freq)
+    if (f >= FREQ_MIN && f <= FREQ_MAX) measured[f] = mag
+  }
+  // Compute cosine similarity between query and every training sample
+  const distances = knnSamples
+    .filter(sample => !EXCLUDED_GROUPS.has(sample.group))
+    .map(sample => {
+    const common = sample.points.filter(p => p.freq >= FREQ_MIN && p.freq <= FREQ_MAX && measured[p.freq] != null)
+    if (common.length === 0) return { group: sample.group, sim: 0 }
+    const v1 = common.map(p => measured[p.freq])
+    const v2 = common.map(p => p.mag)
+    return { group: sample.group, sim: cosineSim(v1, v2) }
+  })
+  // Sort descending by similarity (nearest neighbors first)
+  distances.sort((a, b) => b.sim - a.sim)
+  const neighbors = distances.slice(0, KNN_K)
+  // Majority vote
+  const votes = {}
+  for (const { group } of neighbors) votes[group] = (votes[group] ?? 0) + 1
+  const winner = Object.entries(votes).sort((a, b) => b[1] - a[1])[0]
+  const topSim = neighbors[0].sim
+  // Uncertain if vote is not unanimous and top-2 similarity gap is small
+  const simMargin = neighbors.length > 1 ? neighbors[0].sim - neighbors[KNN_K - 1].sim : 1
+  const uncertain = winner[1] === 1 && simMargin < 0.02  // all split AND very close
+  if (uncertain) {
+    return { group: null, label: 'Uncertain', bestGuess: GROUP_LABELS[winner[0]] ?? winner[0], similarity: topSim, votes, uncertain: true }
+  }
+  return { group: winner[0], label: GROUP_LABELS[winner[0]] ?? winner[0], similarity: topSim, votes, uncertain: false }
 }
 
 export default function SettingsPanel() {
@@ -71,6 +121,7 @@ export default function SettingsPanel() {
   const [noMotor, setNoMotor] = useState(false)
   const [fftData, setFftData] = useState(null)
   const [prediction, setPrediction] = useState(null)
+  const [knnPrediction, setKnnPrediction] = useState(null)
   const [piIpDraft, setPiIpDraft] = useState(
     () => localStorage.getItem(PI_IP_STORAGE_KEY) || DEFAULT_PI_IP
   )
@@ -119,9 +170,11 @@ export default function SettingsPanel() {
         const fft = await fetchFftData()
         setFftData(fft)
         setPrediction(predictThickness(fft?.points))
+        setKnnPrediction(predictKNN(fft?.points))
       } catch {
         setFftData(null)
         setPrediction(null)
+        setKnnPrediction(null)
       }
     } catch (e) {
       setStatus('error')
@@ -337,7 +390,7 @@ export default function SettingsPanel() {
               : <><PlayCircle size={14} /> Start Measurement Now</>}
           </button>
           {(status === 'done' || status === 'error') && (
-            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setFftData(null); setPrediction(null); setNote(''); setNoMotor(false) }}>Reset</button>
+            <button className="btn-outline" onClick={() => { setStatus('idle'); setErrorMsg(''); setFeatures(null); setFftData(null); setPrediction(null); setKnnPrediction(null); setNote(''); setNoMotor(false) }}>Reset</button>
           )}
         </div>
 
@@ -425,23 +478,73 @@ export default function SettingsPanel() {
           </div>
         )}
 
-        {/* ── Thickness prediction ─────────────────────────────────────── */}
-        {status === 'done' && prediction && (
-          <div style={{
-            marginTop: 20,
-            padding: '14px 18px',
-            borderRadius: 'var(--radius)',
-            background: 'rgba(96,165,250,0.07)',
-            border: '1px solid rgba(96,165,250,0.3)',
-            borderLeft: '4px solid #60a5fa',
-          }}>
-            <p style={{ fontSize: '0.65rem', fontWeight: 600, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+        {/* ── Thickness predictions ────────────────────────────────────── */}
+        {status === 'done' && (prediction || knnPrediction) && (
+          <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <p style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--muted-foreground)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
               Liner Thickness Prediction
             </p>
-            <p style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>
-              Predicted liner thickness: <span style={{ color: '#60a5fa' }}>{prediction.label}</span>
-            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
 
+              {/* Zero-Shot (cosine similarity vs group averages) */}
+              {prediction && (() => {
+                const accent = prediction.uncertain ? '#fbbf24' : '#60a5fa'
+                return (
+                  <div style={{
+                    padding: '14px 16px',
+                    borderRadius: 'var(--radius)',
+                    background: prediction.uncertain ? 'rgba(251,191,36,0.07)' : 'rgba(96,165,250,0.07)',
+                    border: `1px solid ${prediction.uncertain ? 'rgba(251,191,36,0.35)' : 'rgba(96,165,250,0.3)'}`,
+                    borderLeft: `4px solid ${accent}`,
+                  }}>
+                    <p style={{ fontSize: '0.6rem', fontWeight: 600, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>
+                      Zero-Shot Learning
+                    </p>
+                    <p style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>
+                      {prediction.label}
+                    </p>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--muted-foreground)', marginTop: 4 }}>
+                      Confidence: {(prediction.similarity * 100).toFixed(2)}%
+                    </p>
+                    {prediction.uncertain && (
+                      <p style={{ fontSize: '0.68rem', color: '#fbbf24', marginTop: 4, opacity: 0.85 }}>
+                        Best estimation: {prediction.bestGuess} — margin &lt; 2%, consider re-measuring.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* k-NN */}
+              {knnPrediction && (() => {
+                const accent = knnPrediction.uncertain ? '#fbbf24' : '#a78bfa'
+                return (
+                  <div style={{
+                    padding: '14px 16px',
+                    borderRadius: 'var(--radius)',
+                    background: knnPrediction.uncertain ? 'rgba(251,191,36,0.07)' : 'rgba(167,139,250,0.07)',
+                    border: `1px solid ${knnPrediction.uncertain ? 'rgba(251,191,36,0.35)' : 'rgba(167,139,250,0.3)'}`,
+                    borderLeft: `4px solid ${accent}`,
+                  }}>
+                    <p style={{ fontSize: '0.6rem', fontWeight: 600, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>
+                      Supervised Learning
+                    </p>
+                    <p style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--foreground)', fontFamily: 'var(--font-mono)' }}>
+                      {knnPrediction.label}
+                    </p>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--muted-foreground)', marginTop: 4 }}>
+                      Confidence: {(knnPrediction.similarity * 100).toFixed(2)}%
+                    </p>
+                    {knnPrediction.uncertain && (
+                      <p style={{ fontSize: '0.68rem', color: '#fbbf24', marginTop: 4, opacity: 0.85 }}>
+                        Best estimation: {knnPrediction.bestGuess} — consider re-measuring.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
+
+            </div>
           </div>
         )}
       </div>
