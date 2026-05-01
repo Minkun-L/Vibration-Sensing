@@ -3,7 +3,6 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { mockHistory, latestMeasurement, getThicknessStatus } from '../lib/mockData.js'
 import { fetchFeatures, fetchHistory } from '../lib/api.js'
 import { Activity, Waves, Timer, Radio, Zap, Wifi, WifiOff, RefreshCw, X, Download } from 'lucide-react'
 
@@ -26,7 +25,6 @@ function FeatureItem({ icon, label, sub, value, unit, extra }) {
 }
 
 function KeyFeatures() {
-  const d = latestMeasurement
   const [live, setLive] = useState(null)   // { primaryFreq, rmsAcceleration, timestamp }
   const [piStatus, setPiStatus] = useState('loading') // loading | connected | offline
   const [refreshing, setRefreshing] = useState(false)
@@ -46,12 +44,12 @@ function KeyFeatures() {
 
   useEffect(() => { load() }, [])
 
-  const primaryFreq     = live ? live.primaryFreq             : d.primaryFreq
-  const rmsAcceleration = live ? live.rmsAcceleration         : d.rmsAcceleration
-  const dampingRatio    = live ? live.dampingRatio            : d.dampingRatio
-  const qFactor         = live ? live.qFactor                 : d.qFactor
-  const spectralCentroid = live ? live.spectralCentroid       : d.spectralCentroid
-  const dataSource      = live ? `Live · Pi · ${new Date(live.timestamp).toLocaleTimeString()}` : `Mock data · ${d.date}`
+  const primaryFreq      = live?.primaryFreq      ?? null
+  const rmsAcceleration  = live?.rmsAcceleration  ?? null
+  const dampingRatio     = live?.dampingRatio      ?? null
+  const qFactor          = live?.qFactor           ?? null
+  const spectralCentroid = live?.spectralCentroid  ?? null
+  const dataSource       = live ? `Live · Pi · ${new Date(live.timestamp).toLocaleTimeString()}` : 'Pi offline'
 
   return (
     <div className="card" style={{ padding: 20 }}>
@@ -59,7 +57,7 @@ function KeyFeatures() {
         <div className="card-title">Latest Key Features</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {piStatus === 'connected' && <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: '#4ade80', fontWeight: 600 }}><Wifi size={12} /> Pi connected</span>}
-          {piStatus === 'offline'   && <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: '#f87171', fontWeight: 600 }}><WifiOff size={12} /> Pi offline — showing mock data</span>}
+          {piStatus === 'offline'   && <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: '#f87171', fontWeight: 600 }}><WifiOff size={12} /> Pi offline</span>}
           <button
             onClick={load}
             disabled={refreshing}
@@ -75,7 +73,7 @@ function KeyFeatures() {
       <FeatureItem icon={<Activity size={15} />} label="Primary Resonance Frequency" sub="f₁ — fundamental bending mode of the liner" value={primaryFreq} unit="Hz" />
       <FeatureItem icon={<Timer size={15} />} label="Damping Ratio · Q Factor" sub="ζ · Q = f₁ / bandwidth" value={typeof dampingRatio === 'number' ? dampingRatio.toFixed(4) : dampingRatio} unit="" extra={`Q = ${typeof qFactor === 'number' ? qFactor.toFixed(1) : qFactor}`} />
       <FeatureItem icon={<Radio size={15} />} label="Spectral Centroid" sub="Centroid (Hz) shifts lower as liner thickness decreases" value={spectralCentroid} unit="Hz" />
-      <FeatureItem icon={<Zap size={15} />} label="RMS of Acceleration" sub="Root-mean-square of Z-axis; increases as liner wears" value={rmsAcceleration.toFixed(2)} unit="g" />
+      <FeatureItem icon={<Zap size={15} />} label="RMS of Acceleration" sub="Root-mean-square of Z-axis; increases as liner wears" value={rmsAcceleration != null ? rmsAcceleration.toFixed(2) : '—'} unit="g" />
     </div>
   )
 }
@@ -93,14 +91,13 @@ function HistoryTable() {
           setLiveHistory([...data].reverse().slice(0, 20))
           setHistSrc('live')
         } else {
-          setHistSrc('mock')
+          setHistSrc('offline')
         }
       })
-      .catch(() => setHistSrc('mock'))
+      .catch(() => setHistSrc('offline'))
   }, [])
 
-  const useMock = histSrc === 'mock' || histSrc === 'loading'
-  const rows    = useMock ? [...mockHistory].reverse() : liveHistory
+  const rows = liveHistory ?? []
 
   // Records currently selected (in order of selection)
   const compareRows = compareIds.map(id => rows?.find(r => r.id === id)).filter(Boolean)
@@ -182,7 +179,7 @@ function HistoryTable() {
           <div className="card-title">Measurement History</div>
           <div className="card-sub">
             {histSrc === 'live' && `${liveHistory.length} sessions (latest 20) · newest first${compareIds.length > 0 ? ` · ${compareIds.length}/2 selected` : ''}`}
-            {histSrc === 'mock' && 'Pi offline — showing mock data · newest first'}
+            {histSrc === 'offline' && 'Pi offline · no data available'}
             {histSrc === 'loading' && 'Loading...'}
           </div>
         </div>
@@ -322,28 +319,11 @@ function HistoryTable() {
       <div className="overflow-x-auto">
         <table>
           <thead>
-            {useMock
-              ? <tr>{['Date','f₁ (Hz)','f₂/f₁','ζ','Q','Centroid (Hz)','RMS (g)','Thickness'].map(h => <th key={h}>{h}</th>)}</tr>
-              : <tr><th style={{ width: 32 }} />{['Date','f₁ (Hz)','Centroid (Hz)','RMS (g)','ζ','Q','Note'].map(h => <th key={h}>{h}</th>)}</tr>
-            }
+            <tr><th style={{ width: 32 }} />{['Date','f₁ (Hz)','Centroid (Hz)','RMS (g)','ζ','Q','Note'].map(h => <th key={h}>{h}</th>)}</tr>
           </thead>
           <tbody>
-            {useMock
-              ? rows.map((r, i) => {
-                  const status = getThicknessStatus(r.linerThicknessPct)
-                  const color = status === 'healthy' ? '#4ade80' : status === 'warning' ? '#fbbf24' : '#f87171'
-                  return (
-                    <tr key={r.id} style={{ opacity: i === 0 ? 1 : 0.85 }}>
-                      <td style={{ fontWeight: 500 }}>{r.date}</td>
-                      <td>{r.primaryFreq}</td>
-                      <td>{r.dampingRatio.toFixed(3)}</td>
-                      <td>{r.qFactor.toFixed(1)}</td>
-                      <td>{r.spectralCentroid}</td>
-                      <td>{r.rmsAcceleration.toFixed(2)}</td>
-                      <td style={{ fontWeight: 600, color }}>{r.linerThicknessPct}%</td>
-                    </tr>
-                  )
-                })
+            {histSrc === 'offline' || (histSrc !== 'loading' && rows.length === 0)
+              ? <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--muted-foreground)', padding: '32px 0', fontStyle: 'italic' }}>Pi offline · connect to Pi to view history</td></tr>
               : rows.map((r, i) => {
                   const selIdx = compareIds.indexOf(r.id)
                   const rowBg = selIdx === 0 ? 'rgba(96,165,250,0.08)' : selIdx === 1 ? 'rgba(244,114,182,0.08)' : undefined
@@ -369,7 +349,7 @@ function HistoryTable() {
                     </tr>
                   )
                 })
-            }
+              }
           </tbody>
         </table>
       </div>
